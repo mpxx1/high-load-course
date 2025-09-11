@@ -175,7 +175,7 @@
                     <compilerPlugins>
                         <plugin>spring</plugin>
                     </compilerPlugins>
-                    <jvmTarget>17</jvmTarget>
+                    <jvmTarget>24</jvmTarget>
                 </configuration>
                 <dependencies>
                     <dependency>
