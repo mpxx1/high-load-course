@@ -37,7 +37,6 @@ class APIController {
             OrderStatus.COLLECTING,
             price,
         )
-        logger.info("Creating order with ID: {}", order.id)
         return orderRepository.save(order)
     }
 
