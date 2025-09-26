@@ -3,13 +3,13 @@ POST http://localhost:1234/test/run
 Content-Type: application/json
 
 {
-  "serviceName": "{{serviceName}}",
-  "token": "{{token}}",
-  "ratePerSecond": 1,
+  "serviceName": "AcDc",
+  "token": "m2maxfs2763AC10gGp",
+  "ratePerSecond": 2,
   "testCount": 100,
-  "processingTimeMillis": 80000
+  "processingTimeMillis": 60000
 }
 
 ### Stop running test to save time and resources
 # @timeout 120
-POST http://localhost:1234/test/stop/{{serviceName}}
+POST http://localhost:1234/test/stop/AcDc
