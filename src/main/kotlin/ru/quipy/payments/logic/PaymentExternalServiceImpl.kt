@@ -12,6 +12,7 @@ import ru.quipy.common.utils.SlidingWindowRateLimiter
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.Semaphore
 
 
 // Advice: always treat time as a Duration
@@ -34,18 +35,10 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private var rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
-    private lateinit var rateLimiter: SlidingWindowRateLimiter
+    private var rateLimiter = SlidingWindowRateLimiter(rate = rateLimitPerSec.toLong(), window = Duration.ofSeconds(1))
+    private val semaphore = Semaphore(parallelRequests)
 
     private val client = OkHttpClient.Builder().build()
-
-
-    init {
-        val averageProcessingTimeInSeconds = requestAverageProcessingTime.toMillis().toDouble() / 1000.0
-        val throughput = 1.0 / averageProcessingTimeInSeconds
-        val rateLimitPerSec = Math.floor(throughput * rateLimitPerSec)
-
-        rateLimiter = SlidingWindowRateLimiter(rate = rateLimitPerSec.toLong(), window = Duration.ofSeconds(1))
-    }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -59,9 +52,9 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         rateLimiter.tickBlocking()
-
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
+        semaphore.acquire()
         try {
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
@@ -101,6 +94,9 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
+        }
+        finally {
+            semaphore.release()
         }
     }
 
