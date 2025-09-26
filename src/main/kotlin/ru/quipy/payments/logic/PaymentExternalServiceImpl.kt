@@ -32,12 +32,20 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val rateLimitPerSec = properties.rateLimitPerSec
+    private var rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
-
-    private val rateLimiter = SlidingWindowRateLimiter(rate = rateLimitPerSec.toLong(), window = Duration.ofSeconds(1))
+    private lateinit var rateLimiter: SlidingWindowRateLimiter
 
     private val client = OkHttpClient.Builder().build()
+
+
+    init {
+        val averageProcessingTimeInSeconds = requestAverageProcessingTime.toMillis().toDouble() / 1000.0
+        val throughput = 1.0 / averageProcessingTimeInSeconds
+        val rateLimitPerSec = Math.floor(throughput * rateLimitPerSec)
+
+        rateLimiter = SlidingWindowRateLimiter(rate = rateLimitPerSec.toLong(), window = Duration.ofSeconds(1))
+    }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
