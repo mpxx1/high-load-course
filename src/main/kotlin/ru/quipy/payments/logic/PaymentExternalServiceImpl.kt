@@ -1,5 +1,6 @@
 package ru.quipy.payments.logic
 
+import org.springframework.beans.factory.annotation.Autowired
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import okhttp3.OkHttpClient
@@ -13,7 +14,7 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
-
+import ru.quipy.payments.api.PaymentMetric
 
 // Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
@@ -21,6 +22,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    private var metrics: PaymentMetric
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -29,7 +31,7 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
     }
-
+    
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
@@ -52,15 +54,23 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
-
-        semaphore.acquire()
+        metrics.semaphoreQueueCount.incrementAndGet()
+        metrics.semaphoreQueueDurationTimer.record (Runnable{
+            semaphore.acquire()
+        } )
+        metrics.semaphoreQueueCount.decrementAndGet()
         try {
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
                 post(emptyBody)
             }.build()
 
-            rateLimiter.tickBlocking()
+            metrics.rateLimiterQueueCount.incrementAndGet()
+            metrics.rateLimiterQueueDurationTimer.record (Runnable {
+                rateLimiter.tickBlocking()
+            })
+            metrics.rateLimiterQueueCount.decrementAndGet()     
+            metrics.incomingRequestsCounter.increment()
             client.newCall(request).execute().use { response ->
                 val body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
@@ -96,6 +106,7 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
         finally {
+            metrics.paymentResponceCounter.increment()
             semaphore.release()
         }
     }
