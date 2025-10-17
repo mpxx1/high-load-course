@@ -38,7 +38,7 @@ class PaymentExternalSystemAdapterImpl(
     private var rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private var rateLimiter = SlidingWindowRateLimiter(rate = rateLimitPerSec.toLong(), window = Duration.ofSeconds(1))
-    private val semaphore = Semaphore(parallelRequests)
+    private val semaphore = Semaphore(parallelRequests, true)
 
     private val client = OkHttpClient.Builder().build()
 
@@ -54,6 +54,11 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+
+        if (checkDeadline(paymentId, transactionId, deadline)){
+            return
+        }
+
         metrics.semaphoreQueueCount.incrementAndGet()
         metrics.semaphoreQueueDurationTimer.record (Runnable{
             semaphore.acquire()
@@ -69,7 +74,13 @@ class PaymentExternalSystemAdapterImpl(
             metrics.rateLimiterQueueDurationTimer.record (Runnable {
                 rateLimiter.tickBlocking()
             })
+            logger.error("rate limiter пропустил: $paymentId")
             metrics.rateLimiterQueueCount.decrementAndGet()     
+
+            if (checkDeadline(paymentId, transactionId, deadline)){
+                return
+            }
+
             metrics.incomingRequestsCounter.increment()
             client.newCall(request).execute().use { response ->
                 val body = try {
@@ -116,6 +127,17 @@ class PaymentExternalSystemAdapterImpl(
     override fun isEnabled() = properties.enabled
 
     override fun name() = properties.accountName
+
+    fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long)  : Boolean {
+        if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
+            logger.error("goodby payment 2: $paymentId")
+            paymentESService.update(paymentId) {
+                it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
+            }
+            return true
+        }
+        return false
+    }
 
 }
 

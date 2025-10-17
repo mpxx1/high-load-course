@@ -13,9 +13,11 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import ru.quipy.apigateway.HttpMetrics
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Metrics
 
 @Service
-class OrderPayer {
+class OrderPayer{
 
     companion object {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
@@ -27,18 +29,32 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(8000) 
+
+    val threadQueueCounter: Gauge = Gauge.builder(
+        "requests_in_thread_queue_total",
+        java.util.function.Supplier { linkedBlockingQueue.size.toDouble() }
+    )
+        .description("Total number of payment requests in queue")
+        .register(Metrics.globalRegistry)
+
     private val paymentExecutor = ThreadPoolExecutor(
         16,
         16,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(8_000),
+        linkedBlockingQueue,
         NamedThreadFactory("payment-submission-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
 
-    fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long,metrics: HttpMetrics): Long {
+    fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long,metrics: HttpMetrics): Triple<Long, Boolean, Long> {
         val createdAt = System.currentTimeMillis()
+        val timeToProcessAllInQueue = (linkedBlockingQueue.size * 13) * 1000
+        if ((createdAt + timeToProcessAllInQueue ) > deadline)
+        {
+            return Triple(createdAt,false,createdAt + timeToProcessAllInQueue)
+        }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
@@ -47,11 +63,11 @@ class OrderPayer {
                     amount
                 )
             }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
+            logger.info("Payment ${createdEvent.paymentId} for order $orderId created.")
 
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             metrics.responceCounter.increment()
         }
-        return createdAt
+        return Triple(createdAt,true,0)
     }
 }
