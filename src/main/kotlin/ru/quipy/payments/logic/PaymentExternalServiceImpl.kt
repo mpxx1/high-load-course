@@ -74,7 +74,6 @@ class PaymentExternalSystemAdapterImpl(
             metrics.rateLimiterQueueDurationTimer.record (Runnable {
                 rateLimiter.tickBlocking()
             })
-            logger.error("rate limiter пропустил: $paymentId")
             metrics.rateLimiterQueueCount.decrementAndGet()     
 
             if (checkDeadline(paymentId, transactionId, deadline)){
@@ -125,6 +124,14 @@ class PaymentExternalSystemAdapterImpl(
     override fun price() = properties.price
 
     override fun isEnabled() = properties.enabled
+
+    override fun getProperties() : PaymentAccountProperties {
+        return properties
+    }
+
+    override fun getNumberOfRequests() : Long {
+        return rateLimiter.size()
+    }
 
     override fun name() = properties.accountName
 

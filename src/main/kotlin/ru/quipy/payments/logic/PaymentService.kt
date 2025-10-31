@@ -8,6 +8,10 @@ interface PaymentService {
      * Submit payment request to some external service.
      */
     fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
+
+    fun getAccountsProperties() : List<PaymentAccountProperties>
+
+    fun getNumberOfRequests(): Long
 }
 
 /**
@@ -24,6 +28,10 @@ interface PaymentExternalSystemAdapter {
     fun price(): Int
 
     fun isEnabled(): Boolean
+
+    fun getProperties(): PaymentAccountProperties
+
+    fun getNumberOfRequests(): Long
 }
 
 /**
