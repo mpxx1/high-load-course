@@ -36,7 +36,8 @@ class PaymentAccountsConfig () {
     lateinit var allowedAccounts: List<String>
 
     val percentile90: Map<String, Long> = mapOf(
-        "acc-7" to 1070L
+        "acc-7" to 1070L,
+        "acc-16" to 1064L
     )
 
     @Bean

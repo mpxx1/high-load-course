@@ -82,8 +82,16 @@ class PaymentExternalSystemAdapterImpl(
         } )
         metrics.semaphoreQueueCount.decrementAndGet()
         try {
+
+            var url = "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+
+            if (properties.percentile90 != null) {
+                val timeout = Duration.ofMillis(properties.percentile90).toString()
+                url = "http://$paymentProviderHostPort/external/process?timeout=$timeout&serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+            }
+
             val request = Request.Builder().run {
-                url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+                url(url)
                 post(emptyBody)
             }.build()
 
