@@ -16,6 +16,7 @@ import ru.quipy.apigateway.HttpMetrics
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import io.micrometer.core.instrument.Counter
+import kotlinx.coroutines.*
 
 @Service
 class OrderPayer(
@@ -27,17 +28,20 @@ class OrderPayer(
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
     }
 
-    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(8000) 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(50000) 
     private val paymentExecutor : ThreadPoolExecutor
 
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
-
+    private var bdScope: CoroutineScope = CoroutineScope(
+           Dispatchers.IO + SupervisorJob() + CoroutineName("payment-service-queue")
+    )
 
     init {
-        val maxThreads = paymentService.getAccountsProperties()
-            .maxOf { it.parallelRequests }
+        var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
+
+        maxThreads = kotlin.math.min(16, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -77,27 +81,40 @@ class OrderPayer(
         val canParallel = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}
         val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
 
-        val timeToProcessAllInQueue = ((linkedBlockingQueue.size.toDouble()) / canParallel) * (maxProcessingTime.toSeconds()) * 1000
-
+        val timeToProcessAllInQueue = (((linkedBlockingQueue.size.toDouble()) / canParallel) + (maxProcessingTime.toSeconds())) * 1000
         val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
         val size = linkedBlockingQueue.size
+        logger.info("queue size $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
         logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $size"  )
         if ((createdAt + timeToProcessAllInQueue ) > deadline)
         {
             logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
+            logger.info("queue size $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime"  )
             metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
             return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         }
         paymentExecutor.submit {
-            val createdEvent = paymentESService.create {
+            bdScope.launch{
+                val createdEvent = paymentESService.create {
                 it.create(
                     paymentId,
                     orderId,
                     amount
                 )
+                }
+                logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
             }
-            logger.info("Payment ${createdEvent.paymentId} for order $orderId created.")
 
+            // val createdEvent = paymentESService.create {
+            //     it.create(
+            //         paymentId,
+            //         orderId,
+            //         amount
+            //     )
+            //     }
+            // logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
+
+            logger.info("Payment ${paymentId} for order $orderId created.")
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             metrics.responceCounter.increment()
         }

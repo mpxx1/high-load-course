@@ -57,14 +57,14 @@ class APIController(
         canRestInQueue = max(canRestInQueue,0) 
 
         var supportSizeQueue =((canRestInQueue / 1000.0) * processingSpeed).toInt()
-
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
-                    "rate={}, bucketSize={}, process all queue={} retry-ater {}",
+                    "rate={}, bucketSize={}, process all queue={} retry-ater {} supportSizeQueue {} ",
             processingSpeed.toLong(),
             max(processingSpeed.toInt(), supportSizeQueue),
             tooManyReqDeadline+ canRestInQueue,
-            tooManyReqDeadline
+            tooManyReqDeadline,
+            supportSizeQueue
         )
 
         return TokenBucketRateLimiter(
@@ -143,19 +143,19 @@ class APIController(
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
         metrics.requestsCounter.increment()
-        val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
-        if (!limiter.tick()){
-            metrics.toManyRespCounter.increment()
-            val numberOfRequests = orderPayer.getNumberOfRequests()+limiter.size()
-            metrics.inQueueCount.set(numberOfRequests)
-            tooManyReqDeadline = ((numberOfRequests.toDouble()  / processingSpeed) * 1000 * ((minProcessingTime)/1000.0) ).toLong()
-            tooManyReqDeadline -= canRestInQueue
+        // val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        // if (!limiter.tick()){
+        //     metrics.toManyRespCounter.increment()
+        //     val numberOfRequests = orderPayer.getNumberOfRequests()+limiter.size()
+        //     metrics.inQueueCount.set(numberOfRequests)
+        //     tooManyReqDeadline = ((numberOfRequests.toDouble()  / processingSpeed) * 1000 * ((minProcessingTime)/1000.0) ).toLong()
+        //     tooManyReqDeadline -= canRestInQueue
 
-            val dead =  System.currentTimeMillis() + tooManyReqDeadline
-            metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+        //     val dead =  System.currentTimeMillis() + tooManyReqDeadline
+        //     metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
 
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
-        }
+        //     return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
+        // }
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
         val order = orderRepository.findById(orderId)?.let {
