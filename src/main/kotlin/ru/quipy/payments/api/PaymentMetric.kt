@@ -30,6 +30,21 @@ class PaymentMetric {
         .description("Total number of incoming payment requests")
         .register(Metrics.globalRegistry)
 
+    val DeadlineCounter = Counter.builder("deadline_total")
+        .tag("num", "1")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+     val DeadlineCounter2 = Counter.builder("deadline_total")
+        .tag("num", "2")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+     val DeadlineCounter3 = Counter.builder("deadline_total")
+        .tag("num", "3")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
     val RequestsCounter = Counter.builder("payment_requests_total")
         .description("Total number of incoming payment requests")
         .register(Metrics.globalRegistry)
@@ -53,6 +68,15 @@ class PaymentMetric {
 
     val rateLimiterQueueCount = AtomicLong(0)
     val semaphoreQueueCount = AtomicLong(0)
+    val requestInPaymentServiceCount = AtomicLong(0)
+
+
+    val requestInPaymentServiceCounter: Gauge = Gauge.builder(
+        "requests_in_payment_service_total",
+        java.util.function.Supplier { requestInPaymentServiceCount.get() }
+    )
+        .description("Total number of payment requests in payment service")
+        .register(Metrics.globalRegistry)
 
 
     val rateLimiterQueueCounter: Gauge = Gauge.builder(

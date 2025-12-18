@@ -17,6 +17,7 @@ import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import io.micrometer.core.instrument.Counter
 import kotlinx.coroutines.*
+import kotlin.random.Random
 
 @Service
 class OrderPayer(
@@ -34,14 +35,14 @@ class OrderPayer(
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
-    private var bdScope: CoroutineScope = CoroutineScope(
-           Dispatchers.IO + SupervisorJob() + CoroutineName("payment-service-queue")
-    )
+    // private var bdScope: CoroutineScope = CoroutineScope(
+    //        Dispatchers.IO + SupervisorJob() + CoroutineName("payment-service-queue")
+    // )
 
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(16, maxThreads)
+        maxThreads = kotlin.math.min(8, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -81,38 +82,55 @@ class OrderPayer(
         val canParallel = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}
         val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
 
-        val timeToProcessAllInQueue = (((linkedBlockingQueue.size.toDouble()) / canParallel) + (maxProcessingTime.toSeconds())) * 1000
+        val numberOfRequests = getNumberOfRequests()
+        if (numberOfRequests >= 5000L){
+            val randomNumber = Random.nextInt(500, 1500)
+            return Triple(createdAt,false,createdAt + randomNumber.toLong())
+        }
+
+        // 5500/1100
+
+        val timeToProcessAllInQueue = ((numberOfRequests/ canParallel) + (maxProcessingTime.toSeconds()+1)) * 1000
         val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
         val size = linkedBlockingQueue.size
-        logger.info("queue size $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
-        logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $size"  )
+         if (size > 3000) {
+            val randomNumber = Random.nextInt(0, 1000)
+            return Triple(createdAt, false, createdAt+ randomNumber.toLong())
+        }
+
+        // if (numberOfRequests > 5000) {
+        //     val randomNumber = Random.nextInt(500, 3000)
+        //     return Triple(createdAt, false, createdAt+ randomNumber.toLong())
+        // }
+        logger.info("queue size $numberOfRequests , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
+        logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $numberOfRequests"  )
         if ((createdAt + timeToProcessAllInQueue ) > deadline)
         {
             logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
-            logger.info("queue size $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime"  )
+            logger.info("queue size $numberOfRequests , canParallel $canParallel ,maxProcessingTime $maxProcessingTime"  )
             metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
             return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         }
         paymentExecutor.submit {
-            bdScope.launch{
-                val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
-                }
-                logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
-            }
-
-            // val createdEvent = paymentESService.create {
+            // bdScope.launch{
+            //     val createdEvent = paymentESService.create {
             //     it.create(
             //         paymentId,
             //         orderId,
             //         amount
             //     )
             //     }
-            // logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
+            //     logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
+            // }
+
+            val createdEvent = paymentESService.create {
+                it.create(
+                    paymentId,
+                    orderId,
+                    amount
+                )
+                }
+            logger.info("bd log for Payment ${createdEvent.paymentId} and order $orderId created.")
 
             logger.info("Payment ${paymentId} for order $orderId created.")
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
