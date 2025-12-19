@@ -83,8 +83,8 @@ class OrderPayer(
         val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
 
         val numberOfRequests = getNumberOfRequests()
-        if (numberOfRequests >= 5000L){
-            val randomNumber = Random.nextInt(500, 1500)
+        if (numberOfRequests >= 3000L){
+            val randomNumber = Random.nextInt(500, 1000)
             return Triple(createdAt,false,createdAt + randomNumber.toLong())
         }
 
