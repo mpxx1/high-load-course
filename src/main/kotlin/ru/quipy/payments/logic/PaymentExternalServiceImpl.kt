@@ -89,7 +89,7 @@ class PaymentExternalSystemAdapterImpl(
     //  .executor(Executors.newFixedThreadPool(100))
 
     private val httpClient = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(150))
+        .executor(Executors.newFixedThreadPool(100))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
