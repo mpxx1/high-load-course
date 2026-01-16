@@ -164,6 +164,7 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
             
+            
         } catch (e: Exception) {
             when (e) {
                 is SocketTimeoutException -> {
@@ -225,7 +226,7 @@ class PaymentExternalSystemAdapterImpl(
             metrics.incomingRequestsCounter.increment()
 
             try {
-                delay(1)
+                // delay(1)
                 send = sendRequestAsync(request, now(), transactionId, paymentId)
 
                 if (send) {
@@ -263,18 +264,25 @@ class PaymentExternalSystemAdapterImpl(
         metrics.sendCounter.increment()
         var result = false
 
-        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply { response ->
-            val executionTimeMillis = System.currentTimeMillis() - startCall
-            metrics.recordLatency(response.statusCode(), executionTimeMillis)
-            val body = try {
-                mapper.readValue(response.body(), ExternalSysResponse::class.java)
-            } catch (e: Exception) {
-                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.statusCode()}, reason: ${response.body()}")
-                ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .thenApply { response ->
+                val executionTimeMillis = System.currentTimeMillis() - startCall
+                metrics.recordLatency(response.statusCode(), executionTimeMillis)
+                val body = try {
+                    mapper.readValue(response.body(), ExternalSysResponse::class.java)
+                } catch (e: Exception) {
+                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.statusCode()}, reason: ${response.body()}")
+                    ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
+                }
+                result = body.result
+                logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
             }
-            result = body.result
-            logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
-        }
+            .exceptionally { ex ->
+                result = false
+                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, reason: ${ex.message}")
+                ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, ex.message)
+            }
+
         return result
     }
 
