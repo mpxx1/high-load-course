@@ -70,7 +70,7 @@ class PaymentExternalSystemAdapterImpl(
     private val retryDelayMillis = 100L
 
     private val dispatcherDB = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
-    private val dispatcherPayment = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
+    private val dispatcherPayment = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
 
     private val paymentScope = CoroutineScope(
         dispatcherPayment + SupervisorJob() + CoroutineName("payment-service-$accountName")
@@ -164,6 +164,7 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
             
+            
         } catch (e: Exception) {
             when (e) {
                 is SocketTimeoutException -> {
@@ -200,11 +201,71 @@ class PaymentExternalSystemAdapterImpl(
 
         val request = requestBuilder.build()
 
-        var send = false
-        var n = 0
-        var delay = 0L
-        while (!send) {
+        attemptRequestAsync(
+            request = request,
+            url = url,
+            paymentId = paymentId,
+            transactionId = transactionId,
+            deadline = deadline,
+            attempt = 0,
+            delay = 0L
+        )
+    }
 
+
+    suspend fun attemptRequestAsync(
+        request: HttpRequest,
+        url: String,
+        paymentId: UUID,
+        transactionId: UUID,
+        deadline: Long,
+        attempt: Int,
+        delay: Long
+    ) {
+        if (attempt >= maxRetryAttempts) {
+            logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId, max retry attempts reached")
+            dbScope.launch {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "Max retry attempts reached")
+                }
+            }
+            metrics.paymentResponceCounter.increment()
+            metrics.requestInPaymentServiceCount.decrementAndGet()
+            return
+        }
+        
+        if (checkDeadline(paymentId, transactionId, deadline, delay)) {
+            logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId, client deadline will exceeded")
+            dbScope.launch {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                }
+            }
+            metrics.paymentResponceCounter.increment()
+            metrics.requestInPaymentServiceCount.decrementAndGet()
+            return
+        }
+        
+        if (attempt > 0) {
+            logger.warn("[$accountName] Payment retrying for txId: $transactionId, payment: $paymentId, attempt: $attempt, delay: $delay ms")
+            metrics.paymentRetryCounter.increment()
+        }
+        
+        if (delay > 0) {
+            delay(delay)
+        }
+        sendRequestWithRetryAsync(request, url, paymentId, transactionId, deadline, attempt, delay)
+    }
+
+    suspend fun sendRequestWithRetryAsync(
+        request: HttpRequest,
+        url: String,
+        paymentId: UUID,
+        transactionId: UUID,
+        deadline: Long,
+        attempt: Int,
+        previousDelay: Long
+        ) {
             metrics.rateLimiterQueueCount.incrementAndGet()
             val startRateLimiter = now()
 
@@ -215,7 +276,13 @@ class PaymentExternalSystemAdapterImpl(
             metrics.rateLimiterQueueDurationTimer.record(durationRateLimiter, TimeUnit.MILLISECONDS)
             metrics.rateLimiterQueueCount.decrementAndGet()     
 
-            if (checkDeadline(paymentId, transactionId, deadline)){
+            if (checkDeadline(paymentId, transactionId, deadline, previousDelay)) {
+                logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId, client deadline will exceeded")
+                dbScope.launch {
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                    }
+                }
                 metrics.DeadlineCounter3.increment()
                 metrics.paymentResponceCounter.increment()
                 metrics.requestInPaymentServiceCount.decrementAndGet()
@@ -224,80 +291,91 @@ class PaymentExternalSystemAdapterImpl(
 
             metrics.incomingRequestsCounter.increment()
 
-            try {
-                delay(1)
-                send = sendRequestAsync(request, now(), transactionId, paymentId)
-
-                if (send) {
-                    // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                    // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
-                    dbScope.launch{
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(send, now(), transactionId, reason = null)
+            val startCall = now()
+            metrics.sendCounter.increment()
+            
+            httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApplyAsync { response ->
+                    val executionTimeMillis = System.currentTimeMillis() - startCall
+                    metrics.recordLatency(response.statusCode(), executionTimeMillis)
+                    
+                    try {
+                        val body = mapper.readValue(response.body(), ExternalSysResponse::class.java)
+                        logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+                        
+                        if (body.result) {
+                            dbScope.launch {
+                                paymentESService.update(paymentId) {
+                                    it.logProcessing(true, now(), transactionId, reason = null)
+                                }
+                            }
+                            metrics.paymentResponceCounter.increment()
+                            metrics.requestInPaymentServiceCount.decrementAndGet()
+                        } else {
+                            paymentScope.launch {
+                        
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.statusCode()}, reason: ${response.body()}")
+                        paymentScope.launch {
+                            handleRetry(
+                                request = request,
+                                url = url,
+                                paymentId = paymentId,
+                                transactionId = transactionId,
+                                deadline = deadline,
+                                currentAttempt = attempt,
+                                previousDelay = previousDelay,
+                                reason = "parse error: ${e.message}"
+                            )
                         }
                     }
-                    break
                 }
-                n += 1
-                val retryResult = doRetry(n, "failed", delay, transactionId, paymentId, deadline)
-                if (!retryResult){
-                    break
+                .exceptionally { ex ->
+                    val reason = when (ex) {
+                        is java.io.InterruptedIOException -> "timeout: ${ex.message}"
+                        else -> "exception: ${ex.message}"
+                    }
+                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, reason: $reason")
+                    paymentScope.launch {
+                        handleRetry(
+                            request = request,
+                            url = url,
+                            paymentId = paymentId,
+                            transactionId = transactionId,
+                            deadline = deadline,
+                            currentAttempt = attempt,
+                            previousDelay = previousDelay,
+                            reason = reason
+                        )
+                    }
+                    null
                 }
-                delay += retryDelayMillis
-            }
-            catch (e: java.io.InterruptedIOException) {
-                n += 1
-                val retryResult = doRetry(n, "timeout", delay, transactionId, paymentId, deadline)
-                if (!retryResult){
-                    break
-                }
-                delay += retryDelayMillis
-            }
-        }
-
-        metrics.paymentResponceCounter.increment()
-        metrics.requestInPaymentServiceCount.decrementAndGet()
     }
 
-    suspend fun sendRequestAsync(request : HttpRequest, startCall: Long, transactionId: UUID, paymentId: UUID) : Boolean {
-        metrics.sendCounter.increment()
-        var result = false
-
-        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply { response ->
-            val executionTimeMillis = System.currentTimeMillis() - startCall
-            metrics.recordLatency(response.statusCode(), executionTimeMillis)
-            val body = try {
-                mapper.readValue(response.body(), ExternalSysResponse::class.java)
-            } catch (e: Exception) {
-                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.statusCode()}, reason: ${response.body()}")
-                ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
-            }
-            result = body.result
-            logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
-        }
-        return result
-    }
-
-    suspend fun doRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long) : Boolean{
-        if (n >= maxRetryAttempts) {
-            logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId, max retry for reason $reason attempts reached")
-            dbScope.launch{
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, reason = "Max retry attempts reached")
-                }
-            }
-            return false
-        }
-        else {
-            if (checkDeadline(paymentId, transactionId, deadline, delay)){
-                logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId, client deadline will exceeded")
-                return false
-            }
-            logger.warn("[$accountName] Payment retrying reason $reason for txId: $transactionId, payment: $paymentId, attempt: $n, delay: $delay ms")
-            metrics.paymentRetryCounter.increment()
-            delay(delay)
-            return true
-        }
+    suspend fun handleRetry(
+        request: HttpRequest,
+        url: String,
+        paymentId: UUID,
+        transactionId: UUID,
+        deadline: Long,
+        currentAttempt: Int,
+        previousDelay: Long,
+        reason: String
+    ) {
+        val nextAttempt = currentAttempt + 1
+        val nextDelay = previousDelay + retryDelayMillis
+        
+        attemptRequestAsync(
+            request = request,
+            url = url,
+            paymentId = paymentId,
+            transactionId = transactionId,
+            deadline = deadline,
+            attempt = nextAttempt,
+            delay = nextDelay
+        )
     }
 
 }
