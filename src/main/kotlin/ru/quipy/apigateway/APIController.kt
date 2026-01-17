@@ -20,6 +20,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min 
 import kotlin.math.ceil
+import kotlin.random.Random
 
 @RestController
 class APIController(
@@ -35,7 +36,7 @@ class APIController(
     private lateinit var orderPayer: OrderPayer
 
     @Volatile
-    private var rateLimiter: TokenBucketRateLimiter? = null
+    private var rateLimiter: LeakingBucketRateLimiter? = null
     private val limiterLock = Any()
 
     private var tooManyReqDeadline: Long = 1000L
@@ -49,7 +50,7 @@ class APIController(
         return kotlin.math.min(property.rateLimitPerSec.toDouble(), property.parallelRequests.toDouble() / property.averageProcessingTime.toSeconds())
     }
 
-    private fun createLimiter(): TokenBucketRateLimiter {
+    private fun createLimiter(): LeakingBucketRateLimiter {
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
 
@@ -57,31 +58,31 @@ class APIController(
         canRestInQueue = max(canRestInQueue,0) 
 
         var supportSizeQueue =((canRestInQueue / 1000.0) * processingSpeed).toInt()
-
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
-                    "rate={}, bucketSize={}, process all queue={} retry-ater {}",
+                    "rate={}, bucketSize={}, process all queue={} retry-ater {} supportSizeQueue {} ",
             processingSpeed.toLong(),
             max(processingSpeed.toInt(), supportSizeQueue),
             tooManyReqDeadline+ canRestInQueue,
-            tooManyReqDeadline
+            tooManyReqDeadline,
+            supportSizeQueue
         )
 
-        return TokenBucketRateLimiter(
-            rate = processingSpeed.toInt(),
-            bucketMaxCapacity =  max(processingSpeed.toInt(), supportSizeQueue),
-            window = 1,
-            timeUnit = TimeUnit.SECONDS
-        )
-
-        // return  LeakingBucketRateLimiter (
-        //     rate = processingSpeed.toLong(),
-        //     window = Duration.ofSeconds(1),
-        //     bucketSize = max(processingSpeed.toInt(), supportSizeQueue)
+        // return TokenBucketRateLimiter(
+        //     rate = processingSpeed.toInt(),
+        //     bucketMaxCapacity =  max(processingSpeed.toInt(), 30000),
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
         // )
+
+        return  LeakingBucketRateLimiter (
+            rate = processingSpeed.toLong(),
+            window = Duration.ofSeconds(1),
+            bucketSize = max(processingSpeed.toInt(), 30000)
+        )
     }
 
-    private fun getOrCreateLimiter(canWait: Long): TokenBucketRateLimiter {
+    private fun getOrCreateLimiter(canWait: Long): LeakingBucketRateLimiter {
 
         if (clientCanWait != null && rateLimiter != null) {
             val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
@@ -151,7 +152,9 @@ class APIController(
             tooManyReqDeadline = ((numberOfRequests.toDouble()  / processingSpeed) * 1000 * ((minProcessingTime)/1000.0) ).toLong()
             tooManyReqDeadline -= canRestInQueue
 
-            val dead =  System.currentTimeMillis() + tooManyReqDeadline
+            var dead =  System.currentTimeMillis() + tooManyReqDeadline
+            val randomNumber = Random.nextInt(10000, 20000)
+            dead = System.currentTimeMillis() + randomNumber.toLong()
             metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
 
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();

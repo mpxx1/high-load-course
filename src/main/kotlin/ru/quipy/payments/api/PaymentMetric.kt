@@ -14,6 +14,49 @@ class PaymentMetric {
         .description("Total number of incoming payment requests")
         .register(Metrics.globalRegistry)
 
+    val ManagerCounter = Counter.builder("manager_requests_total")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+    val AfterSemaphoreCounter = Counter.builder("after_semaphore_total")
+        .description("Total number of requests after semaphore")
+        .register(Metrics.globalRegistry)
+
+    val AfterRateLimiterCounter = Counter.builder("after_rate_limiter_total")
+        .description("Total number of requests after rate limiter")
+        .register(Metrics.globalRegistry)
+
+    val checkDeadlineCounter = Counter.builder("check_deadline_total")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+    val DeadlineCounter = Counter.builder("deadline_total")
+        .tag("num", "1")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+     val DeadlineCounter2 = Counter.builder("deadline_total")
+        .tag("num", "2")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+     val DeadlineCounter3 = Counter.builder("deadline_total")
+        .tag("num", "3")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+
+    val RequestsCounter = Counter.builder("payment_requests_total")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+    
+    val LoopCounter = Counter.builder("loop_total")
+        .description("Total number of incoming payment requests")
+        .register(Metrics.globalRegistry)
+    
+    val sendCounter = Counter.builder("payment_send_total")
+        .description("Total number of payment send")
+        .register(Metrics.globalRegistry)
+
 
     val paymentResponceCounter = Counter.builder("payment_responce_total")
         .description("Total number of payment responce")
@@ -25,6 +68,15 @@ class PaymentMetric {
 
     val rateLimiterQueueCount = AtomicLong(0)
     val semaphoreQueueCount = AtomicLong(0)
+    val requestInPaymentServiceCount = AtomicLong(0)
+
+
+    val requestInPaymentServiceCounter: Gauge = Gauge.builder(
+        "requests_in_payment_service_total",
+        java.util.function.Supplier { requestInPaymentServiceCount.get() }
+    )
+        .description("Total number of payment requests in payment service")
+        .register(Metrics.globalRegistry)
 
 
     val rateLimiterQueueCounter: Gauge = Gauge.builder(

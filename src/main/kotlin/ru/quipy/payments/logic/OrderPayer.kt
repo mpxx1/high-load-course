@@ -16,6 +16,8 @@ import ru.quipy.apigateway.HttpMetrics
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import io.micrometer.core.instrument.Counter
+import kotlinx.coroutines.*
+import kotlin.random.Random
 
 @Service
 class OrderPayer(
@@ -27,17 +29,17 @@ class OrderPayer(
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
     }
 
-    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(8000) 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(50000) 
     private val paymentExecutor : ThreadPoolExecutor
 
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
 
-
     init {
-        val maxThreads = paymentService.getAccountsProperties()
-            .maxOf { it.parallelRequests }
+        var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
+
+        maxThreads = kotlin.math.min(8, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -76,12 +78,19 @@ class OrderPayer(
         val createdAt = System.currentTimeMillis()
         val canParallel = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}
         val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
-
-        val timeToProcessAllInQueue = ((linkedBlockingQueue.size.toDouble()) / canParallel) * (maxProcessingTime.toSeconds()) * 1000
-
-        val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
         val size = linkedBlockingQueue.size
-        logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $size"  )
+
+        val numberOfRequests = getNumberOfRequests()
+        if (numberOfRequests >= 3000L){
+            val randomNumber = Random.nextInt(500, 1000)
+            return Triple(createdAt,false,createdAt + randomNumber.toLong())
+        }
+
+        val timeToProcessAllInQueue = ((numberOfRequests/ canParallel) + (maxProcessingTime.toSeconds()+1)) * 1000
+        val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
+
+        logger.info("queue size $numberOfRequests $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
+        logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $numberOfRequests"  )
         if ((createdAt + timeToProcessAllInQueue ) > deadline)
         {
             logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
@@ -95,9 +104,8 @@ class OrderPayer(
                     orderId,
                     amount
                 )
-            }
-            logger.info("Payment ${createdEvent.paymentId} for order $orderId created.")
-
+                }
+            logger.info("Payment ${paymentId} for order $orderId created.")
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             metrics.responceCounter.increment()
         }
