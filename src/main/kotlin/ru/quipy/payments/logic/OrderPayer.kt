@@ -29,7 +29,7 @@ class OrderPayer(
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
     }
 
-    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(50000) 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(5000) 
     private val paymentExecutor : ThreadPoolExecutor
 
     private lateinit var threadQueueCounter: Gauge
@@ -39,7 +39,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(8, maxThreads)
+        maxThreads = kotlin.math.min(10, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -76,27 +76,34 @@ class OrderPayer(
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long,metrics: HttpMetrics): Triple<Long, Boolean, Long> {
         val createdAt = System.currentTimeMillis()
-        val canParallel = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}
-        val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
-        val size = linkedBlockingQueue.size
+        // val canParallel = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}
+        // val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
+        // val size = linkedBlockingQueue.size
 
-        val numberOfRequests = getNumberOfRequests()
-        if (numberOfRequests >= 3000L){
-            val randomNumber = Random.nextInt(500, 1000)
+        if (linkedBlockingQueue.size >= 4500L){
+            var randomNumber = Random.nextInt(10000, 50000)
+            randomNumber = 5000
             return Triple(createdAt,false,createdAt + randomNumber.toLong())
         }
 
-        val timeToProcessAllInQueue = ((numberOfRequests/ canParallel) + (maxProcessingTime.toSeconds()+1)) * 1000
-        val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
+        // val numberOfRequests = getNumberOfRequests() 
+        // if (numberOfRequests >= 5500L){
+        //     var randomNumber = Random.nextInt(10000, 50000)
+        //     randomNumber = 5000
+        //     return Triple(createdAt,false,createdAt + randomNumber.toLong())
+        // }
 
-        logger.info("queue size $numberOfRequests $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
-        logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $numberOfRequests"  )
-        if ((createdAt + timeToProcessAllInQueue ) > deadline)
-        {
-            logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
-            metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
-            return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
-        }
+        // val timeToProcessAllInQueue = ((numberOfRequests/ canParallel) + (maxProcessingTime.toSeconds()+1)) * 1000
+        // val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
+
+        // logger.info("queue size $numberOfRequests $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
+        // logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $numberOfRequests"  )
+        // if ((createdAt + timeToProcessAllInQueue ) > deadline)
+        // {
+        //     logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
+        //     metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
+        //     return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
+        // }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
