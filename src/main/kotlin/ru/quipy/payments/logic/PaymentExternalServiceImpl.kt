@@ -63,15 +63,15 @@ class PaymentExternalSystemAdapterImpl(
             .register(Metrics.globalRegistry)
 
     private val httpClient = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(30))
+        .executor(Executors.newFixedThreadPool(100))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
     private val maxRetryAttempts = 3
     private val retryDelayMillis = 1000L
 
-    private val dispatcherDB = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
-    private val dispatcherPayment = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
+    private val dispatcherDB = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
+    private val dispatcherPayment = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
 
     private val paymentScope = CoroutineScope(
         dispatcherPayment + SupervisorJob() + CoroutineName("payment-service-$accountName")
@@ -97,13 +97,14 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         metrics.requestInPaymentServiceCount.incrementAndGet()
-
+        paymentScope.launch{
         sendRequestRetryManagerAsync(
                 "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount",
                 paymentId,
                 transactionId,
                 deadline
                 )
+        }
     }
 
     override fun price() = properties.price
@@ -134,7 +135,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     // wait in semaphore queue
-    fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long) {
+    suspend fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long) {
         try {
 
             metrics.incrementTagRps("2");
@@ -149,6 +150,7 @@ class PaymentExternalSystemAdapterImpl(
                     it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
                     }
                 }
+                metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
             }
 
@@ -158,15 +160,44 @@ class PaymentExternalSystemAdapterImpl(
 
             metrics.semaphoreQueueCount.incrementAndGet()
 
-            paymentScope.launch {
-                semaphore.withPermit {
-                    metrics.incrementTagRps("4");
-                    val durationSemaphore = now() - startSemaphore
-                    metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
-                    metrics.semaphoreQueueCount.decrementAndGet()
-                    doRetryLoopAsync( url, paymentId, transactionId, deadline)
-                }
+            semaphore.withPermit {
+                metrics.incrementTagRps("4");
+                val durationSemaphore = now() - startSemaphore
+                metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
+                metrics.semaphoreQueueCount.decrementAndGet()
+                doRetryLoopAsync( url, paymentId, transactionId, deadline)
             }
+
+            // semaphore.withPermit {
+            //         metrics.incrementTagRps("4");
+            //         val durationSemaphore = now() - startSemaphore
+            //         metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
+            //         metrics.semaphoreQueueCount.decrementAndGet()
+            //         doRetryLoopAsync( url, paymentId, transactionId, deadline)
+            //     }
+
+            // paymentScope.launch {
+                // waitRateLimiterAsync()
+                // if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
+                //     metrics.incrementTagDeadline("10")
+                //     logger.error("goodby payment 20: $paymentId")
+                //     dbScope.launch{
+                //         paymentESService.update(paymentId) {
+                //         it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
+                //         }
+                //     }
+                //     metrics.requestInPaymentServiceCount.decrementAndGet()
+                // }
+                // else{
+                // semaphore.withPermit {
+                //     metrics.incrementTagRps("4");
+                //     val durationSemaphore = now() - startSemaphore
+                //     metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
+                //     metrics.semaphoreQueueCount.decrementAndGet()
+                //     doRetryLoopAsync( url, paymentId, transactionId, deadline)
+                // }
+                // }
+            // }
             
             
         } catch (e: Exception) {
@@ -189,6 +220,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
+            metrics.requestInPaymentServiceCount.decrementAndGet()
         }
     }
 
@@ -197,6 +229,7 @@ class PaymentExternalSystemAdapterImpl(
         metrics.incrementTagRps("5");
         if (checkDeadline(paymentId, transactionId, deadline)){
                 metrics.incrementTagDeadline("2")
+                metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
             }
         val requestBuilder = HttpRequest.newBuilder()
@@ -207,11 +240,10 @@ class PaymentExternalSystemAdapterImpl(
         val request = requestBuilder.build()
 
         var n = 0
-        var delay = 0L
+        var d = 0L
         while (true) {
 
             val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline)
-            logger.error("send result: $sendResult reason: $reason paymentId: $paymentId")
             if (sendResult) {
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                 // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
@@ -225,7 +257,7 @@ class PaymentExternalSystemAdapterImpl(
             logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: false, reason: $reason")
 
             n += 1
-            val (retryStatus, retryReason) = canRetry(n, reason, delay, transactionId, paymentId, deadline)
+            val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline)
             if (!retryStatus){
                 logger.warn("[$accountName] Retry for payment txId: $transactionId, payment: $paymentId, succeeded: false, reason: $retryReason")
                 paymentESService.update(paymentId) {
@@ -233,17 +265,24 @@ class PaymentExternalSystemAdapterImpl(
                 }
                 break
             }
+            if (reason.contains("Rate limit for account")){
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = reason+retryReason)
+                }
+                break
+                // delay(1000L)
+                // waitRateLimiterAsync()
+            }
             metrics.paymentRetryCounter.increment()
-            delay(delay)
-            delay += retryDelayMillis
+            delay(d)
+            d += retryDelayMillis
         }
 
         // metrics.paymentResponceCounter.increment()
         metrics.requestInPaymentServiceCount.decrementAndGet()
     }
-    
-    // wait rate limiter and send
-    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long) : Pair<Boolean, String> {
+
+    suspend fun waitRateLimiterAsync() {
         metrics.incrementTagRps("6");
         metrics.rateLimiterQueueCount.incrementAndGet()
         val startRateLimiter = now()
@@ -253,7 +292,11 @@ class PaymentExternalSystemAdapterImpl(
         val durationRateLimiter = now() - startRateLimiter
         metrics.rateLimiterQueueDurationTimer.record(durationRateLimiter, TimeUnit.MILLISECONDS)
         metrics.rateLimiterQueueCount.decrementAndGet()     
-
+    }
+    
+    // wait rate limiter and send
+    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long) : Pair<Boolean, String> {
+        waitRateLimiterAsync()
         if (checkDeadline(paymentId, transactionId, deadline)){
             metrics.incrementTagDeadline("3")
             // metrics.paymentResponceCounter.increment()
@@ -290,32 +333,6 @@ class PaymentExternalSystemAdapterImpl(
             return Pair(false, body.message ?: "Failed")
         }
     }
-
-    // suspend fun sendRequestAsync(request : HttpRequest, startCall: Long, transactionId: UUID, paymentId: UUID) : Boolean {
-    //     metrics.sendCounter.increment()
-    //     var result = false
-
-    //     httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-    //         .thenApply { response ->
-    //             val executionTimeMillis = System.currentTimeMillis() - startCall
-    //             metrics.recordLatency(response.statusCode(), executionTimeMillis)
-    //             val body = try {
-    //                 mapper.readValue(response.body(), ExternalSysResponse::class.java)
-    //             } catch (e: Exception) {
-    //                 logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.statusCode()}, reason: ${response.body()}")
-    //                 ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
-    //             }
-    //             result = body.result
-    //             logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
-    //         }
-    //         .exceptionally { ex ->
-    //             result = false
-    //             logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, reason: ${ex.message}")
-    //             ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, ex.message)
-    //         }
-
-    //     return result
-    // }
 
     suspend fun canRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long) : Pair<Boolean, String> {
         if (n >= maxRetryAttempts) {

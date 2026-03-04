@@ -29,9 +29,10 @@ class OrderPayer(
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
     }
 
-    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(5000) 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(30000) 
     private val paymentExecutor : ThreadPoolExecutor
 
+    // private lateinit var executorScope: CoroutineScope;
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
@@ -39,7 +40,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(10, maxThreads)
+        maxThreads = kotlin.math.min(100, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -51,6 +52,8 @@ class OrderPayer(
             CallerBlockingRejectedExecutionHandler()
         )
 
+        // executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher());
+    
         threadQueueCounter = Gauge.builder(
             "requests_in_thread_queue_total",
             java.util.function.Supplier { linkedBlockingQueue.size.toDouble() }
@@ -80,11 +83,11 @@ class OrderPayer(
         // val maxProcessingTime = paymentService.getAccountsProperties().minOf { p -> p.averageProcessingTime}
         // val size = linkedBlockingQueue.size
 
-        if (linkedBlockingQueue.size >= 4500L){
-            var randomNumber = Random.nextInt(10000, 50000)
-            randomNumber = 5000
-            return Triple(createdAt,false,createdAt + randomNumber.toLong())
-        }
+        // if (linkedBlockingQueue.size >= 4500L){
+        //     var randomNumber = Random.nextInt(10000, 50000)
+        //     randomNumber = 5000
+        //     return Triple(createdAt,false,createdAt + randomNumber.toLong())
+        // }
 
         // val numberOfRequests = getNumberOfRequests() 
         // if (numberOfRequests >= 5500L){
