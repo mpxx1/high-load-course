@@ -55,7 +55,7 @@ class APIController(
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
 
         val processingTimeSafe = minProcessingTime + 2000L
-        val canRestInQueue = clientCanWait!! - processingTimeSafe
+        val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe)
         var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed
         supportSizeQueue = supportSizeQueue * 0.9
 
@@ -73,7 +73,7 @@ class APIController(
 
         return TokenBucketRateLimiter(
             rate = processingSpeed.toInt(),
-            bucketMaxCapacity =  supportSizeQueue.toInt(),
+            bucketMaxCapacity =  max(processingSpeed.toInt(), supportSizeQueue.toInt()),
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
@@ -169,6 +169,10 @@ class APIController(
 
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
+        logger.info(
+            "through limiter "
+        )
+
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
         val order = orderRepository.findById(orderId)?.let {
