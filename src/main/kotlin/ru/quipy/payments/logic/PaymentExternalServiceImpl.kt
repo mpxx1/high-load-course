@@ -265,14 +265,14 @@ class PaymentExternalSystemAdapterImpl(
                 }
                 break
             }
-            if (reason.contains("Rate limit for account")){
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, reason = reason+retryReason)
-                }
-                break
-                // delay(1000L)
-                // waitRateLimiterAsync()
-            }
+            // if (reason.contains("Rate limit for account")){
+            //     paymentESService.update(paymentId) {
+            //         it.logProcessing(false, now(), transactionId, reason = reason+retryReason)
+            //     }
+            //     break
+            //     // delay(1000L)
+            //     // waitRateLimiterAsync()
+            // }
             metrics.paymentRetryCounter.increment()
             delay(d)
             d += retryDelayMillis
