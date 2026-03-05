@@ -54,26 +54,36 @@ class APIController(
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
 
-        canRestInQueue = clientCanWait!! - minProcessingTime - 500
-        canRestInQueue = max(canRestInQueue,0) 
+        val processingTimeSafe = minProcessingTime + 2000L
+        val canRestInQueue = clientCanWait!! - processingTimeSafe
+        var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed
+        supportSizeQueue = supportSizeQueue * 0.9
 
-        var supportSizeQueue =((canRestInQueue / 1000.0) * processingSpeed).toInt()
+        tooManyReqDeadline = processingTimeSafe
+
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
                     "rate={}, bucketSize={}, process all queue={} retry-ater {} supportSizeQueue {} ",
             processingSpeed.toLong(),
-            max(processingSpeed.toInt(), supportSizeQueue),
-            tooManyReqDeadline+ canRestInQueue,
+            max(processingSpeed.toInt(), supportSizeQueue.toInt()),
+            canRestInQueue,
             tooManyReqDeadline,
-            supportSizeQueue
+            supportSizeQueue.toInt()
         )
 
         return TokenBucketRateLimiter(
-            rate = 1100,
-            bucketMaxCapacity =  35200,
+            rate = processingSpeed.toInt(),
+            bucketMaxCapacity =  supportSizeQueue.toInt(),
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
+
+        // return TokenBucketRateLimiter(
+        //     rate = 1100,
+        //     bucketMaxCapacity =  35200,
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
 
         // return  LeakingBucketRateLimiter (
         //     rate = processingSpeed.toLong(),
@@ -154,7 +164,7 @@ class APIController(
 
         //     var dead =  System.currentTimeMillis() + tooManyReqDeadline
             // val randomNumber = Random.nextInt(10000, 20000)
-            val dead = System.currentTimeMillis() + 10000L
+            val dead = System.currentTimeMillis() + tooManyReqDeadline
         //     metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
 
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();

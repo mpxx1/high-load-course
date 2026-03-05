@@ -63,15 +63,15 @@ class PaymentExternalSystemAdapterImpl(
             .register(Metrics.globalRegistry)
 
     private val httpClient = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(100))
+        .executor(Executors.newFixedThreadPool(30))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
     private val maxRetryAttempts = 3
     private val retryDelayMillis = 1000L
 
-    private val dispatcherDB = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
-    private val dispatcherPayment = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
+    private val dispatcherDB = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
+    private val dispatcherPayment = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
 
     private val paymentScope = CoroutineScope(
         dispatcherPayment + SupervisorJob() + CoroutineName("payment-service-$accountName")
