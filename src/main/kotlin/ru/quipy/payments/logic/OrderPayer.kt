@@ -114,24 +114,38 @@ class OrderPayer(
         //     return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         // }
         if (linkedBlockingQueue.remainingCapacity() == 0) {
-            return Triple(createdAt, false, createdAt + 500)
+            return Triple(createdAt, false, createdAt + 30)
         }
+        incrementTagTimeToDeadline("2", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         executorScope.launch {
-            withContext(Dispatchers.IO) {
+            incrementTagTimeToDeadline("4", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+            // withContext(Dispatchers.IO) {
+            //     paymentESService.create {
+            //         it.create(paymentId, orderId, amount)
+            //     }
+            // }
+
+            // // val createdEvent = dbScope.launch {
+            // //     paymentESService.create {
+            // //         it.create(paymentId, orderId, amount)
+            // //     }
+            // // }
+
+            launch(Dispatchers.IO) {
                 paymentESService.create {
                     it.create(paymentId, orderId, amount)
                 }
             }
 
-            // val createdEvent = dbScope.launch {
-            //     paymentESService.create {
+            // paymentESService.create {
             //         it.create(paymentId, orderId, amount)
             //     }
-            // }
             logger.info("Payment ${paymentId} for order $orderId created.")
+            incrementTagTimeToDeadline("5", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             metrics.responceCounter.increment()
         }
+        incrementTagTimeToDeadline("3", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         taskCounter.increment()
         return Triple(createdAt,true,0)
     }
@@ -144,4 +158,14 @@ class OrderPayer(
     fun getNumberOfRequests(): Long {
         return (linkedBlockingQueue.size + paymentService.getNumberOfRequests()).toLong()
     }
+
+    fun incrementTagTimeToDeadline(tagValue: String, duration: Long, unit: TimeUnit) {
+        val safeDuration = maxOf(duration, 0L)
+        Metrics.globalRegistry
+            .timer(
+                "time_to_deadline",
+                "tag", tagValue
+            )
+            .record(safeDuration, unit)
+        }
 }

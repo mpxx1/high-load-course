@@ -88,4 +88,14 @@ class PaymentMetric {
             )
             .increment()
     }
+
+    fun incrementTagTimeToDeadline(tagValue: String, duration: Long, unit: TimeUnit) {
+        val safeDuration = maxOf(duration, 0L)
+        Metrics.globalRegistry
+            .timer(
+                "time_to_deadline",
+                "tag", tagValue
+            )
+            .record(safeDuration, unit)
+        }
 }

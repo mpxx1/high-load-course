@@ -63,15 +63,15 @@ class PaymentExternalSystemAdapterImpl(
             .register(Metrics.globalRegistry)
 
     private val httpClient = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(60))
+        .executor(Executors.newFixedThreadPool(200))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
     private val maxRetryAttempts = 3
     private val retryDelayMillis = 100L
 
-    private val dispatcherDB = Executors.newFixedThreadPool(60).asCoroutineDispatcher()
-    private val dispatcherPayment = Executors.newFixedThreadPool(60).asCoroutineDispatcher()
+    private val dispatcherDB = Executors.newFixedThreadPool(150).asCoroutineDispatcher()
+    private val dispatcherPayment = Executors.newFixedThreadPool(150).asCoroutineDispatcher()
 
     private val paymentScope = CoroutineScope(
         dispatcherPayment + SupervisorJob() + CoroutineName("payment-service-$accountName")
@@ -86,6 +86,7 @@ class PaymentExternalSystemAdapterImpl(
         // metrics.RequestsCounter.increment()
 
         metrics.incrementTagRps("1");
+        metrics.incrementTagTimeToDeadline("6", deadline - now(), TimeUnit.MILLISECONDS)
         val transactionId = UUID.randomUUID()
 
         dbScope.launch {
@@ -95,16 +96,19 @@ class PaymentExternalSystemAdapterImpl(
                 it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
             }
         }
+        metrics.incrementTagTimeToDeadline("7", deadline - now(), TimeUnit.MILLISECONDS)
 
         metrics.requestInPaymentServiceCount.incrementAndGet()
         paymentScope.launch{
-        sendRequestRetryManagerAsync(
-                "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount",
-                paymentId,
-                transactionId,
-                deadline
-                )
+            metrics.incrementTagTimeToDeadline("9", deadline - now(), TimeUnit.MILLISECONDS)
+            sendRequestRetryManagerAsync(
+                    "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount",
+                    paymentId,
+                    transactionId,
+                    deadline
+                    )
         }
+        metrics.incrementTagTimeToDeadline("8", deadline - now(), TimeUnit.MILLISECONDS)
     }
 
     override fun price() = properties.price
@@ -139,6 +143,7 @@ class PaymentExternalSystemAdapterImpl(
         try {
 
             metrics.incrementTagRps("2");
+            metrics.incrementTagTimeToDeadline("10", deadline - now(), TimeUnit.MILLISECONDS)
 
             logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
@@ -155,6 +160,7 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             metrics.incrementTagRps("3");
+            metrics.incrementTagTimeToDeadline("11", deadline - now(), TimeUnit.MILLISECONDS)
 
             val startSemaphore = now()
 

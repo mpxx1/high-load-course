@@ -22,6 +22,13 @@ import kotlin.math.min
 import kotlin.math.ceil
 import kotlin.random.Random
 
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Metrics
+import org.springframework.stereotype.Component
+import java.util.concurrent.atomic.AtomicLong
+import io.micrometer.core.instrument.Timer
+
 @RestController
 class APIController(
     private val metrics: HttpMetrics
@@ -60,6 +67,7 @@ class APIController(
         supportSizeQueue = supportSizeQueue * 0.9
 
         tooManyReqDeadline = processingTimeSafe
+        tooManyReqDeadline = 30
 
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
@@ -154,6 +162,7 @@ class APIController(
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
         metrics.requestsCounter.increment()
+        incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
         if (!limiter.tick()){
             metrics.toManyRespCounter.increment()
@@ -169,6 +178,7 @@ class APIController(
 
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
+        incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         logger.info(
             "through limiter "
         )
@@ -193,4 +203,14 @@ class APIController(
         val timestamp: Long,
         val transactionId: UUID
     )
+
+    fun incrementTagTimeToDeadline(tagValue: String, duration: Long, unit: TimeUnit) {
+        val safeDuration = maxOf(duration, 0L)
+        Metrics.globalRegistry
+            .timer(
+                "time_to_deadline",
+                "tag", tagValue
+            )
+            .record(safeDuration, unit)
+        }
 }
