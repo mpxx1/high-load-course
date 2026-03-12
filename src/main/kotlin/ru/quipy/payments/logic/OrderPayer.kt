@@ -33,7 +33,7 @@ class OrderPayer(
     private val dbScope = CoroutineScope(
         Dispatchers.IO  + SupervisorJob() + CoroutineName("db-order-payer")
     )
-    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(5000) 
+    private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(30000) 
     private val paymentExecutor : ThreadPoolExecutor
 
     private lateinit var executorScope: CoroutineScope;
@@ -44,7 +44,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(100, maxThreads)
+        maxThreads = kotlin.math.min(30, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -116,9 +116,9 @@ class OrderPayer(
         logger.info(
             "stage 2 $orderId"
         )
-        if (linkedBlockingQueue.remainingCapacity() == 0) {
-            return Triple(createdAt, false, createdAt + 10)
-        }
+        // if (linkedBlockingQueue.remainingCapacity() == 0) {
+        //     return Triple(createdAt, false, createdAt + 10)
+        // }
         incrementTagTimeToDeadline("2", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         executorScope.launch {
             incrementTagTimeToDeadline("4", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)

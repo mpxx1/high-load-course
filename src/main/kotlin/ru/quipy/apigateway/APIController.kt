@@ -88,7 +88,7 @@ class APIController(
 
         return TokenBucketRateLimiter(
             rate = 5000,
-            bucketMaxCapacity =  5000,
+            bucketMaxCapacity =  3960,
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
