@@ -44,7 +44,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(60, maxThreads)
+        maxThreads = kotlin.math.min(100, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -113,8 +113,11 @@ class OrderPayer(
         //     metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
         //     return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         // }
+        logger.info(
+            "stage 2 $orderId"
+        )
         if (linkedBlockingQueue.remainingCapacity() == 0) {
-            return Triple(createdAt, false, createdAt + 30)
+            return Triple(createdAt, false, createdAt + 10)
         }
         incrementTagTimeToDeadline("2", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         executorScope.launch {
@@ -131,7 +134,16 @@ class OrderPayer(
             // //     }
             // // }
 
-            launch(Dispatchers.IO) {
+            // launch(Dispatchers.IO) {
+            //     paymentESService.create {
+            //         it.create(paymentId, orderId, amount)
+            //     }
+            // }
+            logger.info(
+            "stage 3 $orderId"
+        )
+
+            val createJob = launch(Dispatchers.IO) {
                 paymentESService.create {
                     it.create(paymentId, orderId, amount)
                 }
@@ -140,9 +152,12 @@ class OrderPayer(
             // paymentESService.create {
             //         it.create(paymentId, orderId, amount)
             //     }
+            logger.info(
+            "stage 4 $orderId $paymentId"
+        )
             logger.info("Payment ${paymentId} for order $orderId created.")
             incrementTagTimeToDeadline("5", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline, createJob)
             metrics.responceCounter.increment()
         }
         incrementTagTimeToDeadline("3", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)

@@ -67,7 +67,7 @@ class APIController(
         supportSizeQueue = supportSizeQueue * 0.9
 
         tooManyReqDeadline = processingTimeSafe
-        tooManyReqDeadline = 30
+        tooManyReqDeadline = 10
 
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
@@ -79,9 +79,16 @@ class APIController(
             supportSizeQueue.toInt()
         )
 
+        // return TokenBucketRateLimiter(
+        //     rate = processingSpeed.toInt(),
+        //     bucketMaxCapacity =  max(processingSpeed.toInt(), supportSizeQueue.toInt()),
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
+
         return TokenBucketRateLimiter(
-            rate = processingSpeed.toInt(),
-            bucketMaxCapacity =  max(processingSpeed.toInt(), supportSizeQueue.toInt()),
+            rate = 5000,
+            bucketMaxCapacity =  5000,
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
@@ -102,20 +109,25 @@ class APIController(
 
     private fun getOrCreateLimiter(canWait: Long): TokenBucketRateLimiter {
 
-        if (clientCanWait != null && rateLimiter != null) {
-            val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
-            if (relativeError <= 0.01){
-                return rateLimiter!!
-            }
+        if (rateLimiter != null) {
+            return rateLimiter!!
         }
 
+        // if (clientCanWait != null && rateLimiter != null) {
+        //     val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
+        //     if (relativeError <= 0.01){
+        //         return rateLimiter!!
+        //     }
+        // }
+
         synchronized(limiterLock) {
-            if (clientCanWait != null && rateLimiter != null) {
-                val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
-                if (relativeError <= 0.01){
-                    return rateLimiter!!
-                }
-            }
+
+            // if (clientCanWait != null && rateLimiter != null) {
+            //     val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
+            //     if (relativeError <= 0.01){
+            //         return rateLimiter!!
+            //     }
+            // }
 
             clientCanWait = canWait
             rateLimiter = createLimiter()
@@ -161,6 +173,9 @@ class APIController(
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
+        logger.info(
+            "stage 0 $orderId"
+        )
         metrics.requestsCounter.increment()
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
@@ -180,7 +195,7 @@ class APIController(
         }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         logger.info(
-            "through limiter "
+            "stage 1 $orderId"
         )
 
         metrics.requestsCounter2.increment()

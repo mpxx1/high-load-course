@@ -15,6 +15,8 @@ import java.time.Duration
 import java.util.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import ru.quipy.payments.api.PaymentMetric
 import java.util.concurrent.TimeUnit
 import io.micrometer.core.instrument.Gauge
@@ -28,6 +30,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.future.await
 
 // Advice: always treat time as a Duration
@@ -78,24 +81,44 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val dbScope = CoroutineScope(
-        dispatcherDB  + SupervisorJob() + CoroutineName("db-payment-service-$accountName")
+        Dispatchers.IO  + SupervisorJob() + CoroutineName("db-payment-service-$accountName")
     )
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    private val paymentLocks = ConcurrentHashMap<UUID, Mutex>()
+
+suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, reason: String, now: Long) {
+    val mutex = paymentLocks.computeIfAbsent(paymentId) { Mutex() }
+    mutex.withLock {
+        paymentESService.update(paymentId) {
+                it.logProcessing(success = success, now, transactionId = transactionId, reason = reason)
+            }
+    }
+}
+
+    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, createJob: kotlinx.coroutines.Job) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId NumberOfRequests: ${getNumberOfRequests()}")
         // metrics.RequestsCounter.increment()
-
+        logger.info(
+            "stage 5 $paymentId"
+        )
         metrics.incrementTagRps("1");
         metrics.incrementTagTimeToDeadline("6", deadline - now(), TimeUnit.MILLISECONDS)
         val transactionId = UUID.randomUUID()
 
-        dbScope.launch {
-            // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-            // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-            paymentESService.update(paymentId) {
-                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        val submissionJob = dbScope.launch {
+            createJob.join()
+            val mutex = paymentLocks.computeIfAbsent(paymentId) { Mutex() }
+            mutex.withLock {
+                // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
+                // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
+                paymentESService.update(paymentId) {
+                    it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+                }
             }
         }
+        logger.info(
+            "stage 6 $paymentId"
+        )
         metrics.incrementTagTimeToDeadline("7", deadline - now(), TimeUnit.MILLISECONDS)
 
         metrics.requestInPaymentServiceCount.incrementAndGet()
@@ -105,7 +128,8 @@ class PaymentExternalSystemAdapterImpl(
                     "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount",
                     paymentId,
                     transactionId,
-                    deadline
+                    deadline,
+                    submissionJob
                     )
         }
         metrics.incrementTagTimeToDeadline("8", deadline - now(), TimeUnit.MILLISECONDS)
@@ -125,13 +149,12 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun name() = properties.accountName
 
-    suspend fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long, delay: Long = 0)  : Boolean {
+    suspend fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, delay: Long = 0)  : Boolean {
         if (deadline < (now()+properties.averageProcessingTime.toMillis() + delay)) {
             logger.error("goodby payment 2: $paymentId")
             dbScope.launch{
-                paymentESService.update(paymentId) {
-                it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
-                }
+                submissionJob.join()
+                safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
             }
             return true
         }
@@ -139,9 +162,12 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     // wait in semaphore queue
-    suspend fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long) {
+    suspend fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job) {
         try {
 
+            logger.info(
+            "stage 7 $paymentId"
+        )
             metrics.incrementTagRps("2");
             metrics.incrementTagTimeToDeadline("10", deadline - now(), TimeUnit.MILLISECONDS)
 
@@ -151,9 +177,8 @@ class PaymentExternalSystemAdapterImpl(
                 metrics.incrementTagDeadline("1")
                 logger.error("goodby payment 2: $paymentId")
                 dbScope.launch{
-                    paymentESService.update(paymentId) {
-                    it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
-                    }
+                    submissionJob.join()
+                    safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
                 }
                 metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
@@ -166,31 +191,65 @@ class PaymentExternalSystemAdapterImpl(
 
             metrics.semaphoreQueueCount.incrementAndGet()
 
+            logger.info(
+            "stage 8 $paymentId"
+        )
+
             semaphore.withPermit {
                 metrics.incrementTagRps("4");
                 val durationSemaphore = now() - startSemaphore
                 metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
                 metrics.semaphoreQueueCount.decrementAndGet()
-                doRetryLoopAsync( url, paymentId, transactionId, deadline)
-            }            
+                doRetryLoopAsync( url, paymentId, transactionId, deadline, submissionJob)
+            }
+
+            // semaphore.withPermit {
+            //         metrics.incrementTagRps("4");
+            //         val durationSemaphore = now() - startSemaphore
+            //         metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
+            //         metrics.semaphoreQueueCount.decrementAndGet()
+            //         doRetryLoopAsync( url, paymentId, transactionId, deadline)
+            //     }
+
+            // paymentScope.launch {
+                // waitRateLimiterAsync()
+                // if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
+                //     metrics.incrementTagDeadline("10")
+                //     logger.error("goodby payment 20: $paymentId")
+                //     dbScope.launch{
+                //         paymentESService.update(paymentId) {
+                //         it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
+                //         }
+                //     }
+                //     metrics.requestInPaymentServiceCount.decrementAndGet()
+                // }
+                // else{
+                // semaphore.withPermit {
+                //     metrics.incrementTagRps("4");
+                //     val durationSemaphore = now() - startSemaphore
+                //     metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
+                //     metrics.semaphoreQueueCount.decrementAndGet()
+                //     doRetryLoopAsync( url, paymentId, transactionId, deadline)
+                // }
+                // }
+            // }
+            
             
         } catch (e: Exception) {
             when (e) {
                 is SocketTimeoutException -> {
-                    logger.warn("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
+                    logger.warn("[$accountName] fail Payment timeout for txId: $transactionId, payment: $paymentId", e)
                     dbScope.launch{
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
-                        }
+                        submissionJob.join()
+                        safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "Request timeout.", now = now())
                     }
                 }
 
                 else -> {
-                    logger.warn("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
+                    logger.warn("[$accountName] fail Payment failed for txId: $transactionId, payment: $paymentId", e)
                     dbScope.launch{
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = e.message)
-                        }
+                        submissionJob.join()
+                        safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "Strange Payment failed.", now = now())
                     }
                 }
             }
@@ -199,9 +258,12 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     // retry loop
-    suspend fun doRetryLoopAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long){
+    suspend fun doRetryLoopAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job){
         metrics.incrementTagRps("5");
-        if (checkDeadline(paymentId, transactionId, deadline)){
+        logger.info(
+            "stage 9 $paymentId"
+        )
+        if (checkDeadline(paymentId, transactionId, deadline, submissionJob)){
                 metrics.incrementTagDeadline("2")
                 metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
@@ -217,25 +279,25 @@ class PaymentExternalSystemAdapterImpl(
         var d = 0L
         while (true) {
 
-            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline)
+            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline, submissionJob)
             if (sendResult) {
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                 // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
                 dbScope.launch{
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(true, now(), transactionId, reason = reason)
-                    }
+                    submissionJob.join()
+                    safeUpdate(success = true, paymentId = paymentId, transactionId = transactionId, reason = reason, now = now())
                 }
                 break
             }
             logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: false, reason: $reason")
 
             n += 1
-            val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline)
+            val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline, submissionJob)
             if (!retryStatus){
-                logger.warn("[$accountName] Retry for payment txId: $transactionId, payment: $paymentId, succeeded: false, reason: $retryReason")
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, reason = reason+retryReason)
+                logger.warn("[$accountName] Fail Retry for payment txId: $transactionId, payment: $paymentId, succeeded: false, reason: $retryReason")
+                dbScope.launch{
+                    submissionJob.join()
+                    safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = reason+retryReason, now = now())
                 }
                 break
             }
@@ -251,6 +313,9 @@ class PaymentExternalSystemAdapterImpl(
             delay(d)
             d += retryDelayMillis
         }
+        logger.info(
+            "stage 10 $paymentId"
+        )
 
         // metrics.paymentResponceCounter.increment()
         metrics.requestInPaymentServiceCount.decrementAndGet()
@@ -269,9 +334,9 @@ class PaymentExternalSystemAdapterImpl(
     }
     
     // wait rate limiter and send
-    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long) : Pair<Boolean, String> {
+    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job) : Pair<Boolean, String> {
         waitRateLimiterAsync()
-        if (checkDeadline(paymentId, transactionId, deadline)){
+        if (checkDeadline(paymentId, transactionId, deadline, submissionJob)){
             metrics.incrementTagDeadline("3")
             // metrics.paymentResponceCounter.increment()
             // metrics.requestInPaymentServiceCount.decrementAndGet()
@@ -286,7 +351,7 @@ class PaymentExternalSystemAdapterImpl(
             val response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
             return processResponce(response, transactionId, paymentId, startCall)
         }
-        catch (e: java.io.InterruptedIOException) {
+        catch (e: Exception) {
             return Pair(false, "exception: ${e.message}")
         }
     }
@@ -308,12 +373,15 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    suspend fun canRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long) : Pair<Boolean, String> {
+    suspend fun canRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job) : Pair<Boolean, String> {
         if (n >= maxRetryAttempts) {
             return Pair(false, "Max retry attempts reached")
         }
         else {
-            if (checkDeadline(paymentId, transactionId, deadline, delay)){
+            if (reason.contains("request timed out")){
+                return Pair(false, "request timed out")
+            }
+            if (checkDeadline(paymentId, transactionId, deadline, submissionJob, delay)){
                 return Pair(false, "Client deadline will exceeded")
             }
             return Pair(true, "Retry successful")
