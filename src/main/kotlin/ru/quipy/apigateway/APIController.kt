@@ -61,9 +61,9 @@ class APIController(
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
 
-        val processingTimeSafe = minProcessingTime + 2000L
-        val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe)
-        var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed
+        val processingTimeSafe = minProcessingTime + 2000L // 0.6.               // 0.1
+        val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe) // 0.4 // 0.99
+        var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed // 2000 // 5000
         supportSizeQueue = supportSizeQueue * 0.9
 
         tooManyReqDeadline = processingTimeSafe
@@ -88,7 +88,7 @@ class APIController(
 
         return TokenBucketRateLimiter(
             rate = 5000,
-            bucketMaxCapacity =  3000,
+            bucketMaxCapacity =  3960,
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
