@@ -13,8 +13,8 @@ import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 
 class TokenBucketRateLimiter(
-    private val rate: Int,
-    private val bucketMaxCapacity: Int,
+    val rate: Int,
+    val bucketMaxCapacity: Int,
     private val window: Long,
     private val timeUnit: TimeUnit = TimeUnit.MINUTES,
 ): RateLimiter {
@@ -61,11 +61,11 @@ class TokenBucketRateLimiter(
         return bucket.get()
     }
 
-    val rateLimiterQueueCounter: Gauge = Gauge.builder(
-        "requests_in_queue_total",
-        java.util.function.Supplier { size() }
-    )
-        .description("Total number of payment requests in queue")
-        .tag("queue", "incoming rate limiter tokenBucket")
-        .register(Metrics.globalRegistry)
+    // val rateLimiterQueueCounter: Gauge = Gauge.builder(
+    //     "requests_in_queue_total",
+    //     java.util.function.Supplier { bucketMaxCapacity - size() }
+    // )
+    //     .description("Total number of payment requests in queue")
+    //     .tag("queue", "incoming rate limiter tokenBucket")
+    //     .register(Metrics.globalRegistry)
 }
