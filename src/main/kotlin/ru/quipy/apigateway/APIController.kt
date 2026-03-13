@@ -61,37 +61,36 @@ class APIController(
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
 
-        val processingTimeSafe = minProcessingTime + 2000L // 0.6.               // 0.1
+        val processingTimeSafe = minProcessingTime + 100L //2000L         // 0.6. // 0.1
         val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe) // 0.4 // 0.99
         var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed // 2000 // 5000
         supportSizeQueue = supportSizeQueue * 0.9
 
-        tooManyReqDeadline = processingTimeSafe
-        tooManyReqDeadline = 10
+        tooManyReqDeadline = minProcessingTime
 
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
                     "rate={}, bucketSize={}, process all queue={} retry-ater {} supportSizeQueue {} ",
             processingSpeed.toLong(),
-            max(processingSpeed.toInt(), supportSizeQueue.toInt()),
+            supportSizeQueue.toInt(),
             canRestInQueue,
             tooManyReqDeadline,
             supportSizeQueue.toInt()
         )
 
-        // return TokenBucketRateLimiter(
-        //     rate = processingSpeed.toInt(),
-        //     bucketMaxCapacity =  max(processingSpeed.toInt(), supportSizeQueue.toInt()),
-        //     window = 1,
-        //     timeUnit = TimeUnit.SECONDS
-        // )
-
         return TokenBucketRateLimiter(
-            rate = 5000,
-            bucketMaxCapacity =  3960,
+            rate = processingSpeed.toInt(),
+            bucketMaxCapacity =  supportSizeQueue.toInt(),
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
+
+        // return TokenBucketRateLimiter(
+        //     rate = 5000,
+        //     bucketMaxCapacity =  3960,
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
 
         // return TokenBucketRateLimiter(
         //     rate = 1100,
@@ -121,6 +120,10 @@ class APIController(
         // }
 
         synchronized(limiterLock) {
+
+            if (rateLimiter != null) {
+                return rateLimiter!!
+            }
 
             // if (clientCanWait != null && rateLimiter != null) {
             //     val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)

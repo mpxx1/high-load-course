@@ -44,7 +44,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(200, maxThreads)
+        maxThreads = kotlin.math.min(60, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
