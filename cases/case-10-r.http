@@ -6,7 +6,7 @@ Content-Type: application/json
 {
   "serviceName": "AcDc",
   "token": "m2maxfs2763AC10gGp",
-  "branch": "hw-9-fix",
+  "branch": "hw-10",
   "accounts": "acc-13",
   "ratePerSecond": 4000,
   "testCount": 1500000,

@@ -98,9 +98,9 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, createJob: kotlinx.coroutines.Job) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId NumberOfRequests: ${getNumberOfRequests()}")
         // metrics.RequestsCounter.increment()
-        logger.info(
-            "stage 5 $paymentId"
-        )
+        // logger.info(
+        //     "stage 5 $paymentId"
+        // )
         metrics.incrementTagRps("1");
         metrics.incrementTagTimeToDeadline("6", deadline - now(), TimeUnit.MILLISECONDS)
         val transactionId = UUID.randomUUID()
@@ -116,9 +116,9 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
                 }
             }
         }
-        logger.info(
-            "stage 6 $paymentId"
-        )
+        // logger.info(
+        //     "stage 6 $paymentId"
+        // )
         metrics.incrementTagTimeToDeadline("7", deadline - now(), TimeUnit.MILLISECONDS)
 
         metrics.requestInPaymentServiceCount.incrementAndGet()
@@ -129,7 +129,8 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
                     paymentId,
                     transactionId,
                     deadline,
-                    submissionJob
+                    submissionJob,
+                    paymentStartedAt
                     )
         }
         metrics.incrementTagTimeToDeadline("8", deadline - now(), TimeUnit.MILLISECONDS)
@@ -149,9 +150,10 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
 
     override fun name() = properties.accountName
 
-    suspend fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, delay: Long = 0)  : Boolean {
+    suspend fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long, delay: Long = 0)  : Boolean {
         if (deadline < (now()+properties.averageProcessingTime.toMillis() + delay)) {
-            logger.error("goodby payment 2: $paymentId")
+            val timeToDeadlie = deadline - paymentStartedAt
+            logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
             dbScope.launch{
                 submissionJob.join()
                 safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
@@ -162,12 +164,12 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
     }
 
     // wait in semaphore queue
-    suspend fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job) {
+    suspend fun sendRequestRetryManagerAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long) {
         try {
 
-            logger.info(
-            "stage 7 $paymentId"
-        )
+        //     logger.info(
+        //     "stage 7 $paymentId"
+        // )
             metrics.incrementTagRps("2");
             metrics.incrementTagTimeToDeadline("10", deadline - now(), TimeUnit.MILLISECONDS)
 
@@ -175,7 +177,8 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
 
             if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
                 metrics.incrementTagDeadline("1")
-                logger.error("goodby payment 2: $paymentId")
+                val timeToDeadlie = deadline - paymentStartedAt
+                logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
                 dbScope.launch{
                     submissionJob.join()
                     safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
@@ -191,16 +194,16 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
 
             metrics.semaphoreQueueCount.incrementAndGet()
 
-            logger.info(
-            "stage 8 $paymentId"
-        )
+        //     logger.info(
+        //     "stage 8 $paymentId"
+        // )
 
             semaphore.withPermit {
                 metrics.incrementTagRps("4");
                 val durationSemaphore = now() - startSemaphore
                 metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
                 metrics.semaphoreQueueCount.decrementAndGet()
-                doRetryLoopAsync( url, paymentId, transactionId, deadline, submissionJob)
+                doRetryLoopAsync( url, paymentId, transactionId, deadline, submissionJob, paymentStartedAt)
             }
 
             // semaphore.withPermit {
@@ -258,12 +261,12 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
     }
 
     // retry loop
-    suspend fun doRetryLoopAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job){
+    suspend fun doRetryLoopAsync(url: String, paymentId: UUID, transactionId: UUID,deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long){
         metrics.incrementTagRps("5");
-        logger.info(
-            "stage 9 $paymentId"
-        )
-        if (checkDeadline(paymentId, transactionId, deadline, submissionJob)){
+        // logger.info(
+        //     "stage 9 $paymentId"
+        // )
+        if (checkDeadline(paymentId, transactionId, deadline, submissionJob, paymentStartedAt)){
                 metrics.incrementTagDeadline("2")
                 metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
@@ -279,7 +282,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         var d = 0L
         while (true) {
 
-            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline, submissionJob)
+            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
             if (sendResult) {
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                 // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
@@ -292,7 +295,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
             logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: false, reason: $reason")
 
             n += 1
-            val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline, submissionJob)
+            val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
             if (!retryStatus){
                 logger.warn("[$accountName] Fail Retry for payment txId: $transactionId, payment: $paymentId, succeeded: false, reason: $retryReason")
                 dbScope.launch{
@@ -313,9 +316,9 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
             delay(d)
             d += retryDelayMillis
         }
-        logger.info(
-            "stage 10 $paymentId"
-        )
+        // logger.info(
+        //     "stage 10 $paymentId"
+        // )
 
         // metrics.paymentResponceCounter.increment()
         metrics.requestInPaymentServiceCount.decrementAndGet()
@@ -334,9 +337,9 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
     }
     
     // wait rate limiter and send
-    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job) : Pair<Boolean, String> {
+    suspend fun sendFunc(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long) : Pair<Boolean, String> {
         waitRateLimiterAsync()
-        if (checkDeadline(paymentId, transactionId, deadline, submissionJob)){
+        if (checkDeadline(paymentId, transactionId, deadline, submissionJob, paymentStartedAt)){
             metrics.incrementTagDeadline("3")
             // metrics.paymentResponceCounter.increment()
             // metrics.requestInPaymentServiceCount.decrementAndGet()
@@ -373,15 +376,16 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         }
     }
 
-    suspend fun canRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job) : Pair<Boolean, String> {
+    suspend fun canRetry(n: Int, reason: String, delay: Long, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long) : Pair<Boolean, String> {
         if (n >= maxRetryAttempts) {
             return Pair(false, "Max retry attempts reached")
         }
         else {
             if (reason.contains("request timed out")){
-                return Pair(false, "request timed out")
+                val timeToDeadlie = deadline - paymentStartedAt
+                return Pair(false, "request timed out timeToDeadlie $timeToDeadlie")
             }
-            if (checkDeadline(paymentId, transactionId, deadline, submissionJob, delay)){
+            if (checkDeadline(paymentId, transactionId, deadline, submissionJob,paymentStartedAt, delay)){
                 return Pair(false, "Client deadline will exceeded")
             }
             return Pair(true, "Retry successful")

@@ -88,7 +88,7 @@ class APIController(
 
         return TokenBucketRateLimiter(
             rate = 5000,
-            bucketMaxCapacity =  4000,
+            bucketMaxCapacity =  4500,
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
@@ -177,9 +177,9 @@ class APIController(
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
-        logger.info(
-            "stage 0 $orderId"
-        )
+        // logger.info(
+        //     "stage 0 $orderId"
+        // )
 
         metrics.requestsCounter.increment()
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
@@ -208,9 +208,9 @@ class APIController(
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-        logger.info(
-            "stage 1 $orderId"
-        )
+        // logger.info(
+        //     "stage 1 $orderId"
+        // )
 
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
@@ -219,11 +219,11 @@ class APIController(
             it
         } ?: throw IllegalArgumentException("No such order $orderId")
 
-        val (createdAt, success, deadline) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
+        val (createdAt, success, retry) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
 
         if (!success){
             metrics.toManyRespCounter2.increment()
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", deadline.toString()).build();
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", retry.toString()).build();
         }
         return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
     }
