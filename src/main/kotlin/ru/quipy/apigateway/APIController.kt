@@ -60,13 +60,14 @@ class APIController(
     private fun createLimiter(): TokenBucketRateLimiter {
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
-        clientCanWait = 970
-        val processingTimeSafe = minProcessingTime + 80L // 100L //2000L         // 0.6. // 0.1
+        // clientCanWait = 970
+        val processingTimeSafe = minProcessingTime + 100L // 100L //2000L         // 0.6. // 0.1
         val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe) // 0.4 // 0.99
         var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed // 2000 // 5000
         supportSizeQueue = supportSizeQueue * 0.9
 
         tooManyReqDeadline = minProcessingTime
+        tooManyReqDeadline = 30
 
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
@@ -78,19 +79,19 @@ class APIController(
             supportSizeQueue.toInt()
         )
 
-        return TokenBucketRateLimiter(
-            rate = processingSpeed.toInt(),
-            bucketMaxCapacity =  supportSizeQueue.toInt(),
-            window = 1,
-            timeUnit = TimeUnit.SECONDS
-        )
-
         // return TokenBucketRateLimiter(
-        //     rate = 5000,
-        //     bucketMaxCapacity =  3960,
+        //     rate = processingSpeed.toInt(),
+        //     bucketMaxCapacity =  supportSizeQueue.toInt(),
         //     window = 1,
         //     timeUnit = TimeUnit.SECONDS
         // )
+
+        return TokenBucketRateLimiter(
+            rate = 5000,
+            bucketMaxCapacity =  4000,
+            window = 1,
+            timeUnit = TimeUnit.SECONDS
+        )
 
         // return TokenBucketRateLimiter(
         //     rate = 1100,
