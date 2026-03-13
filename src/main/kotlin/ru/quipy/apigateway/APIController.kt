@@ -182,30 +182,30 @@ class APIController(
 
         metrics.requestsCounter.increment()
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-        // val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
 
-        // logger.info(
-        //     "TokenBucketRateLimiter (clientCanWait={}) " +
-        //             "rate={}, bucketSize={}",
-        //     deadline - System.currentTimeMillis(),
-        //     limiter.rate,
-        //     limiter.bucketMaxCapacity
-        // )
+        logger.info(
+            "TokenBucketRateLimiter (clientCanWait={}) " +
+                    "rate={}, bucketSize={}",
+            deadline - System.currentTimeMillis(),
+            limiter.rate,
+            limiter.bucketMaxCapacity
+        )
 
-        // if (!limiter.tick()){
-        //     metrics.toManyRespCounter.increment()
-        // //     val numberOfRequests = orderPayer.getNumberOfRequests()+limiter.size()
-        // //     metrics.inQueueCount.set(numberOfRequests)
-        // //     tooManyReqDeadline = ((numberOfRequests.toDouble()  / processingSpeed) * 1000 * ((minProcessingTime)/1000.0) ).toLong()
-        // //     tooManyReqDeadline -= canRestInQueue
+        if (!limiter.tick()){
+            metrics.toManyRespCounter.increment()
+        //     val numberOfRequests = orderPayer.getNumberOfRequests()+limiter.size()
+        //     metrics.inQueueCount.set(numberOfRequests)
+        //     tooManyReqDeadline = ((numberOfRequests.toDouble()  / processingSpeed) * 1000 * ((minProcessingTime)/1000.0) ).toLong()
+        //     tooManyReqDeadline -= canRestInQueue
 
-        // //     var dead =  System.currentTimeMillis() + tooManyReqDeadline
-        //     // val randomNumber = Random.nextInt(10000, 20000)
-        //     val dead = System.currentTimeMillis() + tooManyReqDeadline
-        // //     metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+        //     var dead =  System.currentTimeMillis() + tooManyReqDeadline
+            // val randomNumber = Random.nextInt(10000, 20000)
+            val dead = System.currentTimeMillis() + tooManyReqDeadline
+        //     metrics.toManyRequestsDelayTime.record(dead-System.currentTimeMillis(), TimeUnit.MILLISECONDS)
 
-        //     return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
-        // }
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
+        }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         logger.info(
             "stage 1 $orderId"
@@ -218,11 +218,11 @@ class APIController(
             it
         } ?: throw IllegalArgumentException("No such order $orderId")
 
-        val (createdAt, success, retry) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
+        val (createdAt, success, deadline) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
 
         if (!success){
             metrics.toManyRespCounter2.increment()
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", retry.toString()).build();
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", deadline.toString()).build();
         }
         return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
     }

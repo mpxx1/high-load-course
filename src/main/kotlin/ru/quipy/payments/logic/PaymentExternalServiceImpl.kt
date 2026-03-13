@@ -66,7 +66,7 @@ class PaymentExternalSystemAdapterImpl(
             .register(Metrics.globalRegistry)
 
     private val httpClient = HttpClient.newBuilder()
-        // .executor(Executors.newFixedThreadPool(200))
+        .executor(Executors.newFixedThreadPool(200))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
