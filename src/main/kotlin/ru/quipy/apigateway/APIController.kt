@@ -44,6 +44,21 @@ class APIController(
 
     @Volatile
     private var rateLimiter: TokenBucketRateLimiter? = null
+    @Volatile
+    private var warmupLimiter =  TokenBucketRateLimiter(
+            rate = 100,
+            bucketMaxCapacity = 100,
+            window = 1,
+            timeUnit = TimeUnit.SECONDS
+        )
+
+    @Volatile
+    private var warmupLimiter2 =  TokenBucketRateLimiter(
+            rate = 1000,
+            bucketMaxCapacity = 1000,
+            window = 1,
+            timeUnit = TimeUnit.SECONDS
+        )
     private val limiterLock = Any()
 
     private var tooManyReqDeadline: Long = 1000L
@@ -51,6 +66,8 @@ class APIController(
     private var processingSpeed: Double = 0.0
     @Volatile
     private var clientCanWait: Long? =  null
+    @Volatile
+    private var startTime : Long? =  null
     private var canRestInQueue: Long = 26000
 
     private fun processingSpeed(property : PaymentAccountProperties) : Double{
@@ -78,6 +95,13 @@ class APIController(
             tooManyReqDeadline,
             supportSizeQueue.toInt()
         )
+
+        // warmupLimiter = TokenBucketRateLimiter(
+        //     rate = 100,
+        //     bucketMaxCapacity = 100,
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
 
         // return TokenBucketRateLimiter(
         //     rate = processingSpeed.toInt(),
@@ -177,9 +201,28 @@ class APIController(
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
+        // logger.info(
+        //     "stage 0 $orderId"
+        // )
         metrics.requestsCounter.increment()
+        if (startTime == null){
+            startTime = System.currentTimeMillis()
+        }
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-        val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        val elapsed = System.currentTimeMillis() - startTime!!
+
+        var limiter: TokenBucketRateLimiter
+
+        if (elapsed < 30000) {
+            limiter = warmupLimiter
+            tooManyReqDeadline = 10
+        } else if (elapsed < 40000) {
+            limiter = warmupLimiter2
+            tooManyReqDeadline = 10
+        } 
+        else {
+            limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        }
 
         logger.info(
             "TokenBucketRateLimiter (clientCanWait={}) " +
@@ -204,6 +247,9 @@ class APIController(
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+        // logger.info(
+        //     "stage 1 $orderId"
+        // )
 
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
