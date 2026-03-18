@@ -177,10 +177,6 @@ class APIController(
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
-        // logger.info(
-        //     "stage 0 $orderId"
-        // )
-
         metrics.requestsCounter.increment()
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
@@ -208,9 +204,6 @@ class APIController(
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-        // logger.info(
-        //     "stage 1 $orderId"
-        // )
 
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()

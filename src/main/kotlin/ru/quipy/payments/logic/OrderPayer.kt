@@ -113,35 +113,13 @@ class OrderPayer(
         //     metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
         //     return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         // }
-        // logger.info(
-        //     "stage 2 $orderId"
-        // )
+
         // if (linkedBlockingQueue.remainingCapacity() == 0) {
         //     return Triple(createdAt, false, createdAt + 10)
         // }
         incrementTagTimeToDeadline("2", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         executorScope.launch {
             incrementTagTimeToDeadline("4", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-            // withContext(Dispatchers.IO) {
-            //     paymentESService.create {
-            //         it.create(paymentId, orderId, amount)
-            //     }
-            // }
-
-            // // val createdEvent = dbScope.launch {
-            // //     paymentESService.create {
-            // //         it.create(paymentId, orderId, amount)
-            // //     }
-            // // }
-
-            // launch(Dispatchers.IO) {
-            //     paymentESService.create {
-            //         it.create(paymentId, orderId, amount)
-            //     }
-            // }
-        //     logger.info(
-        //     "stage 3 $orderId"
-        // )
 
             val createJob = launch(Dispatchers.IO) {
                 paymentESService.create {
@@ -149,12 +127,6 @@ class OrderPayer(
                 }
             }
 
-            // paymentESService.create {
-            //         it.create(paymentId, orderId, amount)
-            //     }
-        //     logger.info(
-        //     "stage 4 $orderId $paymentId"
-        // )
             logger.info("Payment ${paymentId} for order $orderId created.")
             incrementTagTimeToDeadline("5", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline, createJob)
