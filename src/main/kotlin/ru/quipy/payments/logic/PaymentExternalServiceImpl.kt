@@ -166,39 +166,7 @@ class PaymentExternalSystemAdapterImpl(
                 metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
                 metrics.semaphoreQueueCount.decrementAndGet()
                 doRetryLoopAsync( url, paymentId, transactionId, deadline)
-            }
-
-            // semaphore.withPermit {
-            //         metrics.incrementTagRps("4");
-            //         val durationSemaphore = now() - startSemaphore
-            //         metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
-            //         metrics.semaphoreQueueCount.decrementAndGet()
-            //         doRetryLoopAsync( url, paymentId, transactionId, deadline)
-            //     }
-
-            // paymentScope.launch {
-                // waitRateLimiterAsync()
-                // if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
-                //     metrics.incrementTagDeadline("10")
-                //     logger.error("goodby payment 20: $paymentId")
-                //     dbScope.launch{
-                //         paymentESService.update(paymentId) {
-                //         it.logProcessing(success = false, now(), transactionId = transactionId, reason = "deadline")
-                //         }
-                //     }
-                //     metrics.requestInPaymentServiceCount.decrementAndGet()
-                // }
-                // else{
-                // semaphore.withPermit {
-                //     metrics.incrementTagRps("4");
-                //     val durationSemaphore = now() - startSemaphore
-                //     metrics.semaphoreQueueDurationTimer.record(durationSemaphore, TimeUnit.MILLISECONDS)
-                //     metrics.semaphoreQueueCount.decrementAndGet()
-                //     doRetryLoopAsync( url, paymentId, transactionId, deadline)
-                // }
-                // }
-            // }
-            
+            }            
             
         } catch (e: Exception) {
             when (e) {

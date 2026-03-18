@@ -32,7 +32,6 @@ class OrderPayer(
     private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(30000) 
     private val paymentExecutor : ThreadPoolExecutor
 
-    // private lateinit var executorScope: CoroutineScope;
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
@@ -51,8 +50,6 @@ class OrderPayer(
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
-
-        // executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher());
     
         threadQueueCounter = Gauge.builder(
             "requests_in_thread_queue_total",
