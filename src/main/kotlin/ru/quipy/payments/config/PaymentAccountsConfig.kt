@@ -14,10 +14,10 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.*
-
+import ru.quipy.payments.api.PaymentMetric
 
 @Configuration
-class PaymentAccountsConfig {
+class PaymentAccountsConfig () {
     companion object {
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
@@ -35,8 +35,12 @@ class PaymentAccountsConfig {
     @Value("#{'\${payment.accounts}'.split(',')}")
     lateinit var allowedAccounts: List<String>
 
+    val percentile90: Map<String, Long> = mapOf(
+        "acc-7" to 1070L
+    )
+
     @Bean
-    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>): List<PaymentExternalSystemAdapter> {
+    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,metrics: PaymentMetric ): List<PaymentExternalSystemAdapter> {
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -50,14 +54,22 @@ class PaymentAccountsConfig {
             mapper.typeFactory.constructCollectionType(List::class.java, PaymentAccountProperties::class.java)
         )
             .filter { it.accountName in allowedAccounts }
-            .map { it.copy(enabled = true) }
+            .map {
+                val p90 = percentile90[it.accountName]
+                if (p90 == null) {
+                    it.copy(enabled = true)
+                } else {
+                    it.copy(enabled = true, percentile90 = p90)
+                }
+            }
             .onEach(::println)
             .map {
                 PaymentExternalSystemAdapterImpl(
                     it,
                     paymentService,
                     paymentProviderHostPort,
-                    token
+                    token,
+                    metrics
                 )
             }
     }

@@ -39,6 +39,16 @@ class SlidingWindowRateLimiter(
         }
     }
 
+    suspend fun tickSuspend() {
+        while (!tick()) {
+            delay(10)
+        }
+    }
+
+    fun size() : Long{
+        return sum.get()
+    }
+
     data class Measure(
         val value: Long,
         val timestamp: Long

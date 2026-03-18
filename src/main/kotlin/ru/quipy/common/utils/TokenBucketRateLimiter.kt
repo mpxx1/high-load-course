@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Metrics
 
 class TokenBucketRateLimiter(
     private val rate: Int,
@@ -25,6 +27,10 @@ class TokenBucketRateLimiter(
     private var bucket: AtomicInteger = AtomicInteger(0)
     private var start = System.currentTimeMillis()
     private var nextExpectedWakeUp = start + timeUnit.toMillis(window)
+
+    fun burst() : Long {
+        return nextExpectedWakeUp
+    }
 
     private val releaseJob = rateLimiterScope.launch {
         while (true) {
@@ -50,4 +56,16 @@ class TokenBucketRateLimiter(
             }
         }
     }
+
+    fun size() : Int {
+        return bucket.get()
+    }
+
+    val rateLimiterQueueCounter: Gauge = Gauge.builder(
+        "requests_in_queue_total",
+        java.util.function.Supplier { size() }
+    )
+        .description("Total number of payment requests in queue")
+        .tag("queue", "incoming rate limiter tokenBucket")
+        .register(Metrics.globalRegistry)
 }
