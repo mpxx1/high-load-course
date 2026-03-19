@@ -247,9 +247,6 @@ class APIController(
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
         incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
-        // logger.info(
-        //     "stage 1 $orderId"
-        // )
 
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
