@@ -17,6 +17,7 @@ import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import io.micrometer.core.instrument.Counter
 import kotlinx.coroutines.*
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 @Service
@@ -29,9 +30,13 @@ class OrderPayer(
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
     }
 
+    private val dbScope = CoroutineScope(
+        Dispatchers.IO  + SupervisorJob() + CoroutineName("db-order-payer")
+    )
     private val linkedBlockingQueue = LinkedBlockingQueue<Runnable>(30000) 
     private val paymentExecutor : ThreadPoolExecutor
 
+    private lateinit var executorScope: CoroutineScope;
     private lateinit var threadQueueCounter: Gauge
     private lateinit var activeCounter: Gauge
     private lateinit var taskCounter: Counter
@@ -39,7 +44,7 @@ class OrderPayer(
     init {
         var maxThreads = paymentService.getAccountsProperties().minOf { p -> processingSpeed(p)}.toInt()
 
-        maxThreads = kotlin.math.min(30, maxThreads)
+        maxThreads = kotlin.math.min(100, maxThreads)
 
         paymentExecutor = ThreadPoolExecutor(
             maxThreads,
@@ -50,6 +55,10 @@ class OrderPayer(
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
+
+        paymentExecutor.prestartAllCoreThreads()
+
+        executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher());
     
         threadQueueCounter = Gauge.builder(
             "requests_in_thread_queue_total",
@@ -99,23 +108,30 @@ class OrderPayer(
         // logger.info("queue size $numberOfRequests $size , canParallel $canParallel ,maxProcessingTime $maxProcessingTime timeToProcessAllInQueue $timeToProcessAllInQueue"  )
         // logger.info("Payment ${paymentId} for order $orderId created. timeToProcessAllInQueue $timeToProcessAllInQueue queueSize $numberOfRequests"  )
         // if ((createdAt + timeToProcessAllInQueue ) > deadline)
-        // {
+        // {    
         //     logger.info("send too many requests becouse createdAt $createdAt + $timeToProcessAllInQueue > $deadline"  )
         //     metrics.toManyRequestsDelayTime2.record(timeToProcessAllInQueue.toLong(), TimeUnit.MILLISECONDS)
         //     return Triple(createdAt,false,createdAt + (timeToProcessAllInQueue - canRestInQueue*1000).toLong())
         // }
-        paymentExecutor.submit {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
+        // if (linkedBlockingQueue.remainingCapacity() == 0) {
+        //     return Triple(createdAt, false, createdAt + 10)
+        // }
+        incrementTagTimeToDeadline("2", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+        executorScope.launch {
+            incrementTagTimeToDeadline("4", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+
+            val createJob = launch(Dispatchers.IO) {
+                paymentESService.create {
+                    it.create(paymentId, orderId, amount)
                 }
+            }
+
             logger.info("Payment ${paymentId} for order $orderId created.")
-            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+            incrementTagTimeToDeadline("5", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline, createJob)
             metrics.responceCounter.increment()
         }
+        incrementTagTimeToDeadline("3", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         taskCounter.increment()
         return Triple(createdAt,true,0)
     }
@@ -128,4 +144,14 @@ class OrderPayer(
     fun getNumberOfRequests(): Long {
         return (linkedBlockingQueue.size + paymentService.getNumberOfRequests()).toLong()
     }
+
+    fun incrementTagTimeToDeadline(tagValue: String, duration: Long, unit: TimeUnit) {
+        val safeDuration = maxOf(duration, 0L)
+        Metrics.globalRegistry
+            .timer(
+                "time_to_deadline",
+                "tag", tagValue
+            )
+            .record(safeDuration, unit)
+        }
 }

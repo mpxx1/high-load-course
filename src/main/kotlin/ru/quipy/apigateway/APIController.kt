@@ -22,6 +22,13 @@ import kotlin.math.min
 import kotlin.math.ceil
 import kotlin.random.Random
 
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.Metrics
+import org.springframework.stereotype.Component
+import java.util.concurrent.atomic.AtomicLong
+import io.micrometer.core.instrument.Timer
+
 @RestController
 class APIController(
     private val metrics: HttpMetrics
@@ -37,6 +44,21 @@ class APIController(
 
     @Volatile
     private var rateLimiter: TokenBucketRateLimiter? = null
+    @Volatile
+    private var warmupLimiter =  TokenBucketRateLimiter(
+            rate = 100,
+            bucketMaxCapacity = 100,
+            window = 1,
+            timeUnit = TimeUnit.SECONDS
+        )
+
+    @Volatile
+    private var warmupLimiter2 =  TokenBucketRateLimiter(
+            rate = 1000,
+            bucketMaxCapacity = 1000,
+            window = 1,
+            timeUnit = TimeUnit.SECONDS
+        )
     private val limiterLock = Any()
 
     private var tooManyReqDeadline: Long = 1000L
@@ -44,6 +66,8 @@ class APIController(
     private var processingSpeed: Double = 0.0
     @Volatile
     private var clientCanWait: Long? =  null
+    @Volatile
+    private var startTime : Long? =  null
     private var canRestInQueue: Long = 26000
 
     private fun processingSpeed(property : PaymentAccountProperties) : Double{
@@ -53,27 +77,42 @@ class APIController(
     private fun createLimiter(): TokenBucketRateLimiter {
         processingSpeed = orderPayer.getAccountsProperties().minOf { p -> processingSpeed(p)}
         minProcessingTime = orderPayer.getAccountsProperties().minOf { p -> p.averageProcessingTime}.toMillis()
-
-        val processingTimeSafe = minProcessingTime + 2000L
-        val canRestInQueue = clientCanWait!! - processingTimeSafe
-        var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed
+        // clientCanWait = 970
+        val processingTimeSafe = minProcessingTime + 100L // 100L //2000L         // 0.6. // 0.1
+        val canRestInQueue = max(0, clientCanWait!! - processingTimeSafe) // 0.4 // 0.99
+        var supportSizeQueue =(canRestInQueue / 1000.0) * processingSpeed // 2000 // 5000
         supportSizeQueue = supportSizeQueue * 0.9
 
-        tooManyReqDeadline = processingTimeSafe
+        tooManyReqDeadline = minProcessingTime
+        tooManyReqDeadline = 30
 
         logger.info(
             "Creating TokenBucketRateLimiter (clientCanWait=$clientCanWait) " +
                     "rate={}, bucketSize={}, process all queue={} retry-ater {} supportSizeQueue {} ",
             processingSpeed.toLong(),
-            max(processingSpeed.toInt(), supportSizeQueue.toInt()),
+            supportSizeQueue.toInt(),
             canRestInQueue,
             tooManyReqDeadline,
             supportSizeQueue.toInt()
         )
 
+        // warmupLimiter = TokenBucketRateLimiter(
+        //     rate = 100,
+        //     bucketMaxCapacity = 100,
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
+
+        // return TokenBucketRateLimiter(
+        //     rate = processingSpeed.toInt(),
+        //     bucketMaxCapacity =  supportSizeQueue.toInt(),
+        //     window = 1,
+        //     timeUnit = TimeUnit.SECONDS
+        // )
+
         return TokenBucketRateLimiter(
-            rate = processingSpeed.toInt(),
-            bucketMaxCapacity =  supportSizeQueue.toInt(),
+            rate = 5000,
+            bucketMaxCapacity =  4500,
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
@@ -94,20 +133,29 @@ class APIController(
 
     private fun getOrCreateLimiter(canWait: Long): TokenBucketRateLimiter {
 
-        if (clientCanWait != null && rateLimiter != null) {
-            val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
-            if (relativeError <= 0.01){
-                return rateLimiter!!
-            }
+        if (rateLimiter != null) {
+            return rateLimiter!!
         }
 
+        // if (clientCanWait != null && rateLimiter != null) {
+        //     val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
+        //     if (relativeError <= 0.01){
+        //         return rateLimiter!!
+        //     }
+        // }
+
         synchronized(limiterLock) {
-            if (clientCanWait != null && rateLimiter != null) {
-                val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
-                if (relativeError <= 0.01){
-                    return rateLimiter!!
-                }
+
+            if (rateLimiter != null) {
+                return rateLimiter!!
             }
+
+            // if (clientCanWait != null && rateLimiter != null) {
+            //     val relativeError = abs(canWait - clientCanWait!!) / abs(clientCanWait!!)
+            //     if (relativeError <= 0.01){
+            //         return rateLimiter!!
+            //     }
+            // }
 
             clientCanWait = canWait
             rateLimiter = createLimiter()
@@ -153,8 +201,37 @@ class APIController(
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
+        // logger.info(
+        //     "stage 0 $orderId"
+        // )
         metrics.requestsCounter.increment()
-        val limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        if (startTime == null){
+            startTime = System.currentTimeMillis()
+        }
+        incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+        val elapsed = System.currentTimeMillis() - startTime!!
+
+        var limiter: TokenBucketRateLimiter
+
+        if (elapsed < 30000) {
+            limiter = warmupLimiter
+            tooManyReqDeadline = 10
+        } else if (elapsed < 40000) {
+            limiter = warmupLimiter2
+            tooManyReqDeadline = 10
+        } 
+        else {
+            limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
+        }
+
+        logger.info(
+            "TokenBucketRateLimiter (clientCanWait={}) " +
+                    "rate={}, bucketSize={}",
+            deadline - System.currentTimeMillis(),
+            limiter.rate,
+            limiter.bucketMaxCapacity
+        )
+
         if (!limiter.tick()){
             metrics.toManyRespCounter.increment()
         //     val numberOfRequests = orderPayer.getNumberOfRequests()+limiter.size()
@@ -169,6 +246,8 @@ class APIController(
 
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", dead.toString()).build();
         }
+        incrementTagTimeToDeadline("1", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
+
         metrics.requestsCounter2.increment()
         val paymentId = UUID.randomUUID()
         val order = orderRepository.findById(orderId)?.let {
@@ -176,11 +255,11 @@ class APIController(
             it
         } ?: throw IllegalArgumentException("No such order $orderId")
 
-        val (createdAt, success, deadline) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
+        val (createdAt, success, retry) = orderPayer.processPayment(orderId, order.price, paymentId, deadline,metrics)
 
         if (!success){
             metrics.toManyRespCounter2.increment()
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", deadline.toString()).build();
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header("Retry-After", retry.toString()).build();
         }
         return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
     }
@@ -189,4 +268,14 @@ class APIController(
         val timestamp: Long,
         val transactionId: UUID
     )
+
+    fun incrementTagTimeToDeadline(tagValue: String, duration: Long, unit: TimeUnit) {
+        val safeDuration = maxOf(duration, 0L)
+        Metrics.globalRegistry
+            .timer(
+                "time_to_deadline",
+                "tag", tagValue
+            )
+            .record(safeDuration, unit)
+        }
 }
