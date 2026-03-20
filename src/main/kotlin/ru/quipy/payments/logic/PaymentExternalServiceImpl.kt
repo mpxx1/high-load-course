@@ -290,7 +290,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         if (checkDeadline(paymentId, transactionId, deadline, submissionJob, paymentStartedAt)){
             metrics.incrementTagDeadline("3")
             // metrics.paymentResponceCounter.increment()
-            metrics.requestInPaymentServiceCount.decrementAndGet()
+            // metrics.requestInPaymentServiceCount.decrementAndGet()
             return Pair(false, "deadline will exceeded")
         }
 
