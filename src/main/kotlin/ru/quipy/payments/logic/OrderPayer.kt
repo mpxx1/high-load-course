@@ -95,12 +95,12 @@ class OrderPayer(
         //     return Triple(createdAt,false,createdAt + randomNumber.toLong())
         // }
 
-        // val numberOfRequests = getNumberOfRequests() 
-        // if (numberOfRequests >= 5500L){
-        //     var randomNumber = Random.nextInt(10000, 50000)
-        //     randomNumber = 5000
-        //     return Triple(createdAt,false,createdAt + randomNumber.toLong())
-        // }
+        val numberOfRequests = getNumberOfRequests() 
+        if (numberOfRequests >= 5000L){
+            var randomNumber = Random.nextInt(10000, 50000)
+            randomNumber = 10
+            return Triple(createdAt,false,createdAt + randomNumber.toLong())
+        }
 
         // val timeToProcessAllInQueue = ((numberOfRequests/ canParallel) + (maxProcessingTime.toSeconds()+1)) * 1000
         // val canRestInQueue =  maxProcessingTime.toSeconds() /- 1.0
