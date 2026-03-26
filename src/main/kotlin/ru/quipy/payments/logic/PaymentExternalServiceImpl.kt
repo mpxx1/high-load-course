@@ -247,7 +247,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         var d = 0L
         while (true) {
 
-            val (sendResult, reason) = executeRequestWithHedge(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
             if (sendResult) {
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                 // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
