@@ -32,6 +32,7 @@ import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.selects.select
 
 // Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
@@ -145,15 +146,24 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
     override fun name() = properties.accountName
 
     suspend fun checkDeadline(paymentId: UUID, transactionId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long, delay: Long = 0)  : Boolean {
-        if (deadline < (now()+properties.averageProcessingTime.toMillis() + delay)) {
+        if(now() >= deadline){
             val timeToDeadlie = deadline - paymentStartedAt
-            logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
+            logger.error("goodby payment 3: $paymentId timeToDeadlie $timeToDeadlie")
             dbScope.launch{
                 submissionJob.join()
                 safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
             }
             return true
         }
+        // if (deadline < (now()+properties.averageProcessingTime.toMillis() + delay)) {
+        //     val timeToDeadlie = deadline - paymentStartedAt
+        //     logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
+        //     dbScope.launch{
+        //         submissionJob.join()
+        //         safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
+        //     }
+        //     return true
+        // }
         return false
     }
 
@@ -165,17 +175,17 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
 
             logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-            if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
-                metrics.incrementTagDeadline("1")
-                val timeToDeadlie = deadline - paymentStartedAt
-                logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
-                dbScope.launch{
-                    submissionJob.join()
-                    safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
-                }
-                metrics.requestInPaymentServiceCount.decrementAndGet()
-                return
-            }
+            // if (deadline < (now()+properties.averageProcessingTime.toMillis())) {
+            //     metrics.incrementTagDeadline("1")
+            //     val timeToDeadlie = deadline - paymentStartedAt
+            //     logger.error("goodby payment 2: $paymentId timeToDeadlie $timeToDeadlie")
+            //     dbScope.launch{
+            //         submissionJob.join()
+            //         safeUpdate(success = false, paymentId = paymentId, transactionId = transactionId, reason = "deadline", now = now())
+            //     }
+            //     metrics.requestInPaymentServiceCount.decrementAndGet()
+            //     return
+            // }
 
             metrics.incrementTagRps("3");
             metrics.incrementTagTimeToDeadline("11", deadline - now(), TimeUnit.MILLISECONDS)
@@ -222,10 +232,14 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
                 metrics.requestInPaymentServiceCount.decrementAndGet()
                 return
             }
+
+        val idempotencyKey = UUID.randomUUID().toString()
+
         val requestBuilder = HttpRequest.newBuilder()
             .uri(URI(url))
             .timeout(Duration.ofMillis(deadline - now()))
             .POST(HttpRequest.BodyPublishers.noBody())
+            .header("idempotencyKey", idempotencyKey)
 
         val request = requestBuilder.build()
 
@@ -233,7 +247,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         var d = 0L
         while (true) {
 
-            val (sendResult, reason) = sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            val (sendResult, reason) = executeRequestWithHedge(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
             if (sendResult) {
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                 // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
@@ -282,6 +296,46 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         val durationRateLimiter = now() - startRateLimiter
         metrics.rateLimiterQueueDurationTimer.record(durationRateLimiter, TimeUnit.MILLISECONDS)
         metrics.rateLimiterQueueCount.decrementAndGet()     
+    }
+
+    suspend fun executeRequestWithHedge(request : HttpRequest, transactionId: UUID, paymentId: UUID, deadline: Long, submissionJob: kotlinx.coroutines.Job, paymentStartedAt: Long)  : Pair<Boolean, String> = supervisorScope {
+        val primaryRequest = async {
+            sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+        }
+
+        val hedgedRequest = async {
+            if (!primaryRequest.isCompleted) {
+                sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            } else {
+                Pair(false, "hedgedRequest not needed")
+            }
+        }
+
+        val hedgedRequest2 = async {
+            if (!primaryRequest.isCompleted && !hedgedRequest.isCompleted) {
+                sendFunc(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            } else {
+                Pair(false, "hedgedRequest2 not needed")
+            }
+        }
+
+        select<Pair<Boolean, String>> {
+            primaryRequest.onAwait { result ->
+                hedgedRequest.cancel()
+                hedgedRequest2.cancel()
+                result
+            }
+            hedgedRequest.onAwait { result ->
+                primaryRequest.cancel()
+                hedgedRequest2.cancel()
+                result
+            }
+            hedgedRequest2.onAwait { result ->
+                primaryRequest.cancel()
+                hedgedRequest.cancel()
+                result
+            }
+        }
     }
     
     // wait rate limiter and send

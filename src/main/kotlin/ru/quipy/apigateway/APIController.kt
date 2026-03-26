@@ -44,21 +44,21 @@ class APIController(
 
     @Volatile
     private var rateLimiter: TokenBucketRateLimiter? = null
-    @Volatile
-    private var warmupLimiter =  TokenBucketRateLimiter(
-            rate = 100,
-            bucketMaxCapacity = 100,
-            window = 1,
-            timeUnit = TimeUnit.SECONDS
-        )
+    // @Volatile
+    // private var warmupLimiter =  TokenBucketRateLimiter(
+    //         rate = 100,
+    //         bucketMaxCapacity = 100,
+    //         window = 1,
+    //         timeUnit = TimeUnit.SECONDS
+    //     )
 
-    @Volatile
-    private var warmupLimiter2 =  TokenBucketRateLimiter(
-            rate = 1000,
-            bucketMaxCapacity = 1000,
-            window = 1,
-            timeUnit = TimeUnit.SECONDS
-        )
+    // @Volatile
+    // private var warmupLimiter2 =  TokenBucketRateLimiter(
+    //         rate = 1000,
+    //         bucketMaxCapacity = 1000,
+    //         window = 1,
+    //         timeUnit = TimeUnit.SECONDS
+    //     )
     private val limiterLock = Any()
 
     private var tooManyReqDeadline: Long = 1000L
@@ -96,33 +96,12 @@ class APIController(
             supportSizeQueue.toInt()
         )
 
-        // warmupLimiter = TokenBucketRateLimiter(
-        //     rate = 100,
-        //     bucketMaxCapacity = 100,
-        //     window = 1,
-        //     timeUnit = TimeUnit.SECONDS
-        // )
-
-        // return TokenBucketRateLimiter(
-        //     rate = processingSpeed.toInt(),
-        //     bucketMaxCapacity =  supportSizeQueue.toInt(),
-        //     window = 1,
-        //     timeUnit = TimeUnit.SECONDS
-        // )
-
         return TokenBucketRateLimiter(
-            rate = 5000,
-            bucketMaxCapacity =  4500,
+            rate = processingSpeed.toInt(),
+            bucketMaxCapacity =  max(supportSizeQueue.toInt(),processingSpeed.toInt()),
             window = 1,
             timeUnit = TimeUnit.SECONDS
         )
-
-        // return TokenBucketRateLimiter(
-        //     rate = 1100,
-        //     bucketMaxCapacity =  35200,
-        //     window = 1,
-        //     timeUnit = TimeUnit.SECONDS
-        // )
 
         // return  LeakingBucketRateLimiter (
         //     rate = processingSpeed.toLong(),
@@ -211,18 +190,7 @@ class APIController(
         incrementTagTimeToDeadline("0", deadline - System.currentTimeMillis(), TimeUnit.MILLISECONDS)
         val elapsed = System.currentTimeMillis() - startTime!!
 
-        var limiter: TokenBucketRateLimiter
-
-        if (elapsed < 30000) {
-            limiter = warmupLimiter
-            tooManyReqDeadline = 10
-        } else if (elapsed < 40000) {
-            limiter = warmupLimiter2
-            tooManyReqDeadline = 10
-        } 
-        else {
-            limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
-        }
+        var limiter = getOrCreateLimiter(deadline - System.currentTimeMillis())
 
         logger.info(
             "TokenBucketRateLimiter (clientCanWait={}) " +
