@@ -28,11 +28,28 @@ import java.util.concurrent.Executors
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.http.HttpTimeoutException
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.channels.Channel
+
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
+import io.github.resilience4j.kotlin.circuitbreaker.executeSuspendFunction
+
+class PaymentInfo(
+    val request : HttpRequest,
+    val transactionId: UUID,
+    val paymentId: UUID,
+    val deadline: Long,
+    val submissionJob: kotlinx.coroutines.Job,
+    val paymentStartedAt: Long
+)
 
 // Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
@@ -66,6 +83,68 @@ class PaymentExternalSystemAdapterImpl(
             .description("availablePermits in semaphore for account $accountName")
             .register(Metrics.globalRegistry)
 
+
+
+    private var circuitBreakerConfig = CircuitBreakerConfig.custom()
+        // окно измеряется количеством запросов
+        .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
+        // Размер окна, по которому считаются ошибки
+        .slidingWindowSize(100)
+        // Сколько запросов нужно накопить, прежде чем CircuitBreaker начнёт анализировать качество
+        .minimumNumberOfCalls(50)
+
+        // Процент ошибок, после которого breaker заблокируется
+        .failureRateThreshold(7f)
+        // Процент медленных запросов, после которого breaker заблокируется
+        .slowCallRateThreshold(7f)
+        // что такое медленный запрос?
+        .slowCallDurationThreshold(Duration.ofMillis(1000))
+
+        // Через сколько разрешать тестовые запуски?
+        .waitDurationInOpenState(Duration.ofMillis(15000))
+        // Сколько запросов можно пропустить для теста не заработала ли система
+        .permittedNumberOfCallsInHalfOpenState(3)
+
+
+        .automaticTransitionFromOpenToHalfOpenEnabled(true)
+        .recordExceptions(Exception::class.java,RuntimeException::class.java, java.net.http.HttpTimeoutException::class.java)
+        .build()
+
+    private val circuitBreaker = CircuitBreaker.of("circuit-breaker", circuitBreakerConfig)
+
+    val circuitBreakerState = Gauge.builder(
+            "circuit_breaker_state",
+            java.util.function.Supplier { circuitBreaker.state.ordinal }
+        )
+            .description("CircuitBreaker state: 0=CLOSED, 1=HALF_OPEN, 2=OPEN")
+            .register(Metrics.globalRegistry)
+
+    val rejectedQueue = Channel<PaymentInfo>(capacity = Channel.UNLIMITED)
+    val rejectedQueueCount = AtomicInteger(0)
+
+    val rejectedQueueCounter = Gauge.builder(
+            "requests_in_rejected_queue_total",
+            java.util.function.Supplier { rejectedQueueCount.get() }
+        )
+            .description("Total number of payment requests in rejected queue")
+            .register(Metrics.globalRegistry)
+
+    fun CoroutineScope.startReadRejectedQueueWorker(circuitBreaker: CircuitBreaker) = launch {
+        for (req in rejectedQueue) {    
+            
+            while (circuitBreaker.state == CircuitBreaker.State.OPEN) {
+                delay(300)
+            }
+
+            paymentScope.launch{
+                semaphore.withPermit {
+                    sendFunc(req.request,req.transactionId, req.paymentId, req.deadline, req.submissionJob, req.paymentStartedAt)
+                    rejectedQueueCount.decrementAndGet()
+                }
+            }
+        }
+    }
+    
     private val httpClient = HttpClient.newBuilder()
         // .executor(Executors.newFixedThreadPool(30))
         .version(HttpClient.Version.HTTP_2)
@@ -75,7 +154,12 @@ class PaymentExternalSystemAdapterImpl(
     private val retryDelayMillis = 100L
 
     // private val dispatcherDB = Executors.newFixedThreadPool(150).asCoroutineDispatcher()
+    private val dispatcherRejectedQueue = Executors.newFixedThreadPool(30).asCoroutineDispatcher()
     private val dispatcherPayment = Executors.newFixedThreadPool(100).asCoroutineDispatcher()
+
+    private val rejectedQueueScope = CoroutineScope(
+        dispatcherRejectedQueue + SupervisorJob() + CoroutineName("rejected-service-$accountName")
+    )
 
     private val paymentScope = CoroutineScope(
         dispatcherPayment + SupervisorJob() + CoroutineName("payment-service-$accountName")
@@ -86,6 +170,10 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val paymentLocks = ConcurrentHashMap<UUID, Mutex>()
+
+    init {
+        rejectedQueueScope.startReadRejectedQueueWorker(circuitBreaker)
+    }
 
 suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, reason: String, now: Long) {
     val mutex = paymentLocks.computeIfAbsent(paymentId) { Mutex() }
@@ -237,7 +325,7 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
 
         val requestBuilder = HttpRequest.newBuilder()
             .uri(URI(url))
-            .timeout(Duration.ofMillis(deadline - now()))
+            .timeout(Duration.ofMillis(1000)) //Duration.ofMillis(deadline - now())
             .POST(HttpRequest.BodyPublishers.noBody())
             .header("idempotencyKey", idempotencyKey)
 
@@ -258,7 +346,9 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
                 break
             }
             logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: false, reason: $reason")
-
+            if (reason.contains("circuit breaker open") || reason.contains("timeout exception")){
+                break
+            }
             n += 1
             val (retryStatus, retryReason) = canRetry(n, reason, d, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
             if (!retryStatus){
@@ -351,19 +441,65 @@ suspend fun safeUpdate(success: Boolean, paymentId: UUID, transactionId: UUID, r
         metrics.incomingRequestsCounter.increment()
         metrics.incrementTagRps("7");
 
-        try {
-            val startCall = now()
-            val response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
-            return processResponce(response, transactionId, paymentId, startCall)
+        return try {
+            circuitBreaker.executeSuspendFunction {
+
+                val startCall = now()
+
+                val response = httpClient
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .await()
+
+                processResponce(response, transactionId, paymentId, startCall)
+            }
+        } catch (e: CallNotPermittedException) {
+            val info = PaymentInfo(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            val result = rejectedQueue.trySend(info)
+
+            if (result.isFailure) {
+                logger.warn("Failed to enqueue rejected request: queue full")
+            }
+            else {
+                rejectedQueueCount.incrementAndGet()
+            }
+            Pair(false, "circuit breaker open")
+        } 
+        catch (e: HttpTimeoutException){
+            val info = PaymentInfo(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            val result = rejectedQueue.trySend(info)
+
+            if (result.isFailure) {
+                logger.warn("Failed to enqueue rejected request: queue full")
+            }
+            else {
+                rejectedQueueCount.incrementAndGet()
+            }
+            Pair(false, "timeout exception")
+        }
+        catch (e: RuntimeException){
+            val info = PaymentInfo(request, transactionId, paymentId, deadline, submissionJob, paymentStartedAt)
+            val result = rejectedQueue.trySend(info)
+
+            if (result.isFailure) {
+                logger.warn("Failed to enqueue rejected request: queue full")
+            }
+            else {
+                rejectedQueueCount.incrementAndGet()
+            }
+            Pair(false, "status code 500+")
         }
         catch (e: Exception) {
-            return Pair(false, "exception: ${e.message}")
+            Pair(false, "exception: ${e.message}")
         }
     }
 
     suspend fun processResponce(response: HttpResponse<String>, transactionId: UUID, paymentId: UUID,startCall: Long): Pair<Boolean, String> {
         val executionTimeMillis = System.currentTimeMillis() - startCall
         metrics.recordLatency(response.statusCode(), executionTimeMillis)
+        if (response.statusCode() >= 500){
+            metrics.internalErrorCounter.increment()
+            throw RuntimeException("Server error: ${response.statusCode()}")
+        }
         val body = try {
             mapper.readValue(response.body(), ExternalSysResponse::class.java)
         } catch (e: Exception) {

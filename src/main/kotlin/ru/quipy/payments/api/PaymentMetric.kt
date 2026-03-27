@@ -98,4 +98,8 @@ class PaymentMetric {
             )
             .record(safeDuration, unit)
         }
+
+    val internalErrorCounter = Counter.builder("internal_error_total")
+        .description("Total number of internal error")
+        .register(Metrics.globalRegistry)
 }
